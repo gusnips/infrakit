@@ -1,0 +1,46 @@
+{
+  "name": "@gusnips/infra",
+  "version": "0.1.0",
+  "description": "Server checks, log policies, encrypted backups, disk alerts and certificate sync",
+  "type": "module",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/gusnips/infrakit.git"
+  },
+  "packageManager": "bun@1.4.2",
+  "files": [
+    "dist",
+    "docs",
+    "jobs",
+    "PRODUCT.md",
+    "README.md",
+    "LICENSE"
+  ],
+  "bin": {
+    "gusnips-infra": "./dist/cli.js"
+  },
+  "exports": {
+    "./jobs/*": "./jobs/*"
+  },
+  "scripts": {
+    "build": "rm -rf dist && tsc -p tsconfig.build.json && chmod +x dist/cli.js",
+    "lint": "eslint src scripts tests && for file in jobs/*.sh tests/*.sh; do bash -n \"$file\" || exit; done && shellcheck -x --source-path=SCRIPTDIR jobs/*.sh tests/*.sh",
+    "typecheck": "tsc --noEmit",
+    "format:check": "prettier --check .",
+    "release:check": "bun run build && bun scripts/check-release.ts",
+    "check": "bun run lint && bun run typecheck && bun run format:check && bun run release:check",
+    "prepublishOnly": "bun run check"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.0",
+    "@types/node": "^24.0.0",
+    "eslint": "^9.39.0",
+    "prettier": "^3.6.0",
+    "typescript": "^5.9.0",
+    "typescript-eslint": "^8.46.0"
+  }
+}
