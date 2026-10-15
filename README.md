@@ -17,7 +17,7 @@ Prints configuration text, warnings and the reloads you would need. It installs 
 ## Install the package
 
 ```sh
-npm install --global @gusnips/infra@0.1.0
+npm install --global @gusnips/infra@0.1.1
 ```
 
 The CLI needs Node.js in PATH and has no JavaScript runtime dependencies. Publishing or installing the package does not schedule a job or restart a service. `gusnips-infra install` only prints a plan; its `--apply` is refused before SSH. The PM2 parser command has its own explicit `--apply`, which changes only a reviewed local module source file and never calls PM2.
