@@ -528,7 +528,7 @@ try {
   await privateWrite(cgroup, "0::/system.slice/pm2-ops.service\n");
   await tool(
     "systemctl",
-    '[[ ${TEST_SYSTEMCTL:-} != fail ]] || exit 1\nif [[ $1 == is-enabled ]]; then printf "enabled\\n"; elif [[ $1 == is-active ]]; then [[ ${TEST_UPGRADE_TIMER:-} != inactive ]] || exit 1; printf "active\\n"; elif [[ $2 == pm2-ops.service ]]; then printf "LoadState=loaded\\nActiveState=active\\nControlGroup=/system.slice/pm2-ops.service\\nAfter=%s\\nTimeoutStopUSec=%s\\n" "${TEST_AFTER:-redis-server.service docker.service}" "${TEST_TIMEOUT:-2min}"; elif [[ $* == *LoadState* ]]; then printf "loaded\\n"; else exit 1; fi',
+    '[[ ${TEST_SYSTEMCTL:-} != fail ]] || exit 1\nif [[ $1 == is-enabled ]]; then printf "enabled\\n"; elif [[ $1 == is-active ]]; then [[ ${TEST_UPGRADE_TIMER:-} != inactive ]] || exit 1; printf "active\\n"; elif [[ $2 == pm2-ops.service && ${TEST_UNIT:-active} != active ]]; then printf "LoadState=loaded\\nActiveState=%s\\nControlGroup=\\nAfter=redis-server.service docker.service\\nTimeoutStopUSec=2min\\n" "$TEST_UNIT"; elif [[ $2 == pm2-ops.service ]]; then printf "LoadState=loaded\\nActiveState=active\\nControlGroup=/system.slice/pm2-ops.service\\nAfter=%s\\nTimeoutStopUSec=%s\\n" "${TEST_AFTER:-redis-server.service docker.service}" "${TEST_TIMEOUT:-2min}"; elif [[ $* == *LoadState* ]]; then printf "loaded\\n"; else exit 1; fi',
   );
   const pm2Script = (await scriptFor(all)).replaceAll("/proc/", `${proc}/`);
   assert.equal(
@@ -556,6 +556,19 @@ try {
     "finding",
   );
   delete process.env.TEST_AFTER;
+  // A live daemon beside a stopped unit runs outside it. A unit between states is not judged.
+  for (const [unitState, expected] of [
+    ["inactive", "finding"],
+    ["failed", "finding"],
+    ["activating", "unknown"],
+  ]) {
+    process.env.TEST_UNIT = unitState;
+    assert.equal(
+      status(all, execute(pm2Script), "PM2 unit pm2-ops.service"),
+      expected,
+    );
+  }
+  delete process.env.TEST_UNIT;
 
   assert(!/\beval\b|\bsource\b.*\.conf|pm2 (jlist|start)/.test(script));
   const inventory = manifest.inventory;

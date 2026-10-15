@@ -177,7 +177,14 @@ probe_pm2() {
     while IFS='=' read -r key value; do
         case $key in LoadState) load=$value ;; ActiveState) active=$value ;; ControlGroup) group=$value ;; After) ordering=$value ;; TimeoutStopUSec) timeout=$value ;; esac
     done <<< "$output"
-    [[ $load == loaded && $active == active && -n $group && -n $ordering && -n $timeout ]] || { emit unknown "$id"; return; }
+    [[ $load == loaded ]] || { emit unknown "$id"; return; }
+    # The daemon is alive, so a stopped unit cannot hold it: its ordering and stop timeout do nothing.
+    case $active in
+        active) ;;
+        inactive|failed) emit finding "$id"; return ;;
+        *) emit unknown "$id"; return ;;
+    esac
+    [[ -n $group && -n $ordering && -n $timeout ]] || { emit unknown "$id"; return; }
     cgroups=$(cat "/proc/$pid/cgroup" 2>/dev/null) || { emit unknown "$id"; return; }
     local found=0 dependency controllers _hierarchy
     while IFS=: read -r _hierarchy controllers value; do
