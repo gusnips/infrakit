@@ -1189,12 +1189,15 @@ try {
   delete process.env.TEST_SSH;
   await rm(join(tools, "ssh-argv"));
   const planPath = join(temporary, "plan.json");
+  const { version: packageVersion } = JSON.parse(
+    await readFile(join(root, "package.json"), "utf8"),
+  ) as { version: string };
   const plan = {
     version: 1,
     host: "ops@server.example.net",
     sudo: true,
     install: {
-      packageVersion: "0.1.0",
+      packageVersion,
       prefix: "/opt/infrakit",
       jobs: [
         {
