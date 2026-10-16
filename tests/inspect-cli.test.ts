@@ -375,6 +375,45 @@ try {
     (check) => check.label === "SSH login rules",
   );
   const sshScript = await scriptFor(sshItems);
+  const fakeSshd = await readFile(join(tools, "sshd"), "utf8");
+  const sshdRules =
+    "PasswordAuthentication no\nKbdInteractiveAuthentication no\nPermitRootLogin no\n";
+  for (const [rules, expected] of [
+    [sshdRules, "pass"],
+    [sshdRules.replace(/^\S+/gm, (key) => key.toUpperCase()), "pass"],
+    [
+      sshdRules.replace(
+        "PasswordAuthentication no",
+        "PasswordAuthentication yes",
+      ),
+      "finding",
+    ],
+    [
+      sshdRules.replace(
+        "KbdInteractiveAuthentication no",
+        "KbdInteractiveAuthentication yes",
+      ),
+      "finding",
+    ],
+    [sshdRules.replace("PermitRootLogin no", "PermitRootLogin yes"), "finding"],
+    [
+      sshdRules.replace(
+        "PasswordAuthentication no",
+        "PasswordAuthentication NO",
+      ),
+      "unknown",
+    ],
+    [sshdRules.replace("KbdInteractiveAuthentication no\n", ""), "unknown"],
+  ]) {
+    assert(rules && expected);
+    await tool("sshd", `printf '%s' ${quote(rules)}`);
+    assert.equal(
+      status(sshItems, execute(sshScript), "SSH login rules"),
+      expected,
+      rules,
+    );
+  }
+  await writeFile(join(tools, "sshd"), fakeSshd);
   for (const address of [
     "192.0.2.20",
     "0.0.0.0",
@@ -473,8 +512,7 @@ try {
     },
   );
   assert.equal(omittedEndpoint.status, 0, omittedEndpoint.stderr);
-  assert(omittedEndpoint.stdout.includes("passwordauthentication no\n"));
-  const fakeSshd = await readFile(join(tools, "sshd"), "utf8");
+  assert.match(omittedEndpoint.stdout, /^passwordauthentication no$/im);
   await tool("sshd", `exec ${quote(realSshd)} -f ${quote(sshConfig)} "$@"`);
   assert.equal(
     status(sshItems, execute(sshScript), "SSH login rules"),
