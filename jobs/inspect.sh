@@ -105,9 +105,9 @@ probe_sshd() {
     ip_address "$client_address" && ip_address "$local_address" && (( client_port <= 65535 && local_port <= 65535 )) || { emit unknown "$id"; return; }
     context+=",laddr=$local_address,lport=$local_port"; root_context+=",laddr=$local_address,lport=$local_port"
     output=$(sshd -T -C "$context" 2>/dev/null) && root_output=$(sshd -T -C "$root_context" 2>/dev/null) || { emit unknown "$id"; return; }
-    password=$(awk '$1=="passwordauthentication" {print $2}' <<< "$output")
-    keyboard=$(awk '$1=="kbdinteractiveauthentication" {print $2}' <<< "$output")
-    root=$(awk '$1=="permitrootlogin" {print $2}' <<< "$root_output")
+    password=$(awk 'tolower($1)=="passwordauthentication" {print $2}' <<< "$output")
+    keyboard=$(awk 'tolower($1)=="kbdinteractiveauthentication" {print $2}' <<< "$output")
+    root=$(awk 'tolower($1)=="permitrootlogin" {print $2}' <<< "$root_output")
     [[ $password =~ ^(yes|no)$ && $keyboard =~ ^(yes|no)$ && $root =~ ^(yes|no|prohibit-password|without-password|forced-commands-only)$ ]] || { emit unknown "$id"; return; }
     [[ $root != without-password ]] || root=prohibit-password
     if [[ $password == no && $keyboard == no && ( $root == no || $root == "$expected" ) ]]; then emit pass "$id"; else emit finding "$id"; fi
