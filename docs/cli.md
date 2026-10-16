@@ -164,7 +164,7 @@ This checks private local job-file metadata, without reading or executing its co
 ```json
 {
   "install": {
-    "packageVersion": "0.1.1",
+    "packageVersion": "0.1.2",
     "prefix": "/opt/infrakit",
     "jobs": [
       {
