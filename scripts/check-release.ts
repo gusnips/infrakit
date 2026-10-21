@@ -23,7 +23,14 @@ const compiled = [
   "manifest.js",
   "pm2-logrotate.js",
 ];
-const jobs = ["backup", "alert", "heartbeat", "diskwatch", "cert-sync"];
+const jobs = [
+  "backup",
+  "backup-sync",
+  "alert",
+  "heartbeat",
+  "diskwatch",
+  "cert-sync",
+];
 const required = [
   "package.json",
   "README.md",
@@ -214,7 +221,7 @@ try {
     );
   }
   console.log(
-    `Packed ${source.name}@${source.version}: six compiled CLI modules, five executable jobs, two shell helpers and public docs. Node and job help passed; no extra files or credential signatures found. Nothing was published.`,
+    `Packed ${source.name}@${source.version}: six compiled CLI modules, six executable jobs, two shell helpers and public docs. Node and job help passed; no extra files or credential signatures found. Nothing was published.`,
   );
 } finally {
   await rm(work, { recursive: true, force: true });

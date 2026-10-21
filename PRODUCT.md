@@ -10,7 +10,7 @@ The `gusnips-infra` CLI reads a host over SSH and reports findings or unverified
 
 Log policies print Docker, journald, ops-log and PM2 settings for review. A separate guarded command can preview, apply or reverse one reviewed pm2-logrotate parser fix. It changes only the local module's source file and never calls PM2 or restarts a service.
 
-Bash jobs collect database dumps, host or container Redis snapshots and explicitly listed files. They encrypt them with age and check a fresh download before recording an offsite backup. SMTP alerts and outside heartbeat pings use private configuration files. A host ping can require a recent verified backup proof.
+Bash jobs collect database dumps, host or container Redis snapshots and explicitly listed files. They encrypt them with age and check a fresh download on S3 or Cloudflare R2 before recording an offsite backup. `backup-sync.sh` syncs verified encrypted snapshots between providers or from local archives and rebinds local receipts when switching buckets. SMTP alerts and outside heartbeat pings use private configuration files. A host ping can require a recent verified backup proof.
 
 Disk watch checks space, inodes and a separate boot filesystem, then sends mail when warning or critical levels change or a disk recovers. Certificate sync checks a Caddy pair, updates existing PostgreSQL certificate files in place, reloads PostgreSQL and verifies its served fingerprint. If a write or verification fails, the job tries to restore the previous files and proof. It keeps recovery data when it cannot confirm that restore. The job takes the existing shared deploy lock without creating or changing it.
 

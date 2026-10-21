@@ -32,9 +32,16 @@ const files = (path: string, prefix = ""): string[] =>
           : [`${prefix}${entry.name}`],
       );
 const remote = (value: string | undefined) => {
-  if (!value?.startsWith("backup:"))
-    throw new Error("The fake only accepts the private local backend.");
-  return value.slice("backup:".length);
+  if (!value) throw new Error("Missing path in fake rclone command.");
+  if (value.startsWith("backup:") || value.startsWith("source:")) {
+    const rest = value.slice(value.indexOf(":") + 1);
+    if (rest.startsWith("/")) return rest;
+    if (env.FAKE_S3_ROOT) return join(env.FAKE_S3_ROOT, rest);
+  }
+  if (value.startsWith("/")) return value;
+  throw new Error(
+    "The fake only accepts the private local or fake S3 backend.",
+  );
 };
 const hash = (file: string) =>
   createHash("sha256").update(readFileSync(file)).digest("hex");
@@ -86,6 +93,13 @@ const field = (config: string, name: string): string => {
 
 switch (tool) {
   case "rclone": {
+    if (env.FAKE_RCLONE_ENV_CAPTURE) {
+      const captured: Record<string, string | undefined> = {};
+      for (const [k, v] of Object.entries(env)) {
+        if (k.startsWith("RCLONE_")) captured[k] = v;
+      }
+      writeFileSync(env.FAKE_RCLONE_ENV_CAPTURE, JSON.stringify(captured));
+    }
     const command = args[0];
     if (
       env.FAKE_FAIL === command ||
@@ -105,7 +119,7 @@ switch (tool) {
         mkdirSync(remote(args[1]), { recursive: true, mode: 0o700 });
         break;
       case "copy": {
-        const from = args[1] ?? "";
+        const from = remote(args[1]);
         const to = remote(args[2]);
         mkdirSync(to, { recursive: true, mode: 0o700 });
         const selected = files(from).filter((file) => `/${file}` !== exclude);
@@ -145,7 +159,7 @@ switch (tool) {
         break;
       }
       case "check": {
-        const from = args[1] ?? "";
+        const from = remote(args[1]);
         const to = remote(args[2]);
         if (!args.includes("--download") || !args.includes("--one-way"))
           fail("The check must download each object.");

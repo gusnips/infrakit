@@ -57,8 +57,8 @@ Required:
 
 Optional:
 
-- `BACKEND`: `r2` by default. `local` is for isolated checks only and requires `LOCAL_REMOTE_DIR`, an absolute private directory separate from archive and state.
-- `R2_ENV`: required for the R2 backend. Path to the private Bash R2 file below.
+- `BACKEND`: `s3` or `r2` (`r2` by default, or `s3` when `S3_ENV` is set). `local` is for isolated checks only and requires `LOCAL_REMOTE_DIR`, an absolute private directory separate from archive and state.
+- `S3_ENV` / `R2_ENV`: required for the `s3` or `r2` backend. Path to the private Bash remote file below.
 - `LOCAL_KEEP_DAYS`: 1–36500 days, default `7`.
 - `REMOTE_KEEP_DAYS`: 1–36500 days, default `30`.
 - `ALERT_CONFIG`: private SMTP file. Unset means no email alerts. When set, a failed job sends an authored summary, not its raw logs. Mail failure never turns a failed backup into success.
@@ -73,15 +73,26 @@ For example, a host-file job:
 ```bash
 JOB_ID=nightly
 PROFILE=files
+BACKEND=s3
 ARCHIVE_DIR=/var/backups/infrakit/nightly
 STATE_DIR=/var/lib/infrakit/nightly
-R2_ENV=/etc/infrakit/r2.conf
+S3_ENV=/etc/infrakit/s3.conf
 REMOTE_PREFIX=backups/nightly
 BACKUP_AGE_RECIPIENT='replace-with-your-public-age-recipient'
 CONFIG_PATHS=(/etc/my-service/settings.conf /etc/my-service/keys.conf)
 ```
 
-The R2 file contains:
+For AWS S3, `/etc/infrakit/s3.conf` contains:
+
+```bash
+S3_PROVIDER='AWS'
+S3_REGION='sa-east-1'
+S3_ACCESS_KEY_ID='replace-with-your-access-key'
+S3_SECRET_ACCESS_KEY='replace-with-your-secret-key'
+S3_BUCKET='your-backup-bucket'
+```
+
+For Cloudflare R2, use `R2_ENV=/etc/infrakit/r2.conf` (or `S3_ENV`):
 
 ```bash
 R2_ACCOUNT_ID='replace-with-your-32-digit-hex-account-id'
@@ -90,7 +101,17 @@ R2_SECRET_ACCESS_KEY='replace-with-your-secret-key'
 R2_BUCKET='your-backup-bucket'
 ```
 
-You can set `R2_ENDPOINT` instead of `R2_ACCOUNT_ID`. It must be a bare HTTPS origin, without a path or credentials. Missing R2 or age settings fail; they never become a local-only success. Rclone reads credentials from its process environment, not argv or a shared rclone config. Uploads use `--s3-no-head`; verification still downloads every encrypted object.
+You can set `S3_ENDPOINT` or `R2_ENDPOINT` for another S3-compatible provider (with `S3_PROVIDER='Other'`), or instead of `R2_ACCOUNT_ID`. It must be a bare HTTPS origin, without a path or credentials. Missing remote or age settings fail; they never become a local-only success. Rclone reads credentials from its process environment, not argv or a shared rclone config. Uploads use `--s3-no-head`; verification still downloads every encrypted object.
+
+### Switching providers and smart sync
+
+When moving a job between S3 and R2 (or seeding a new bucket for the first time), update `S3_ENV` or `R2_ENV` in the job file and run `backup-sync.sh`:
+
+```sh
+bash "$(npm root -g)/@gusnips/infra/jobs/backup-sync.sh" /etc/infrakit/nightly.conf --from-env /etc/infrakit/previous-remote.conf
+```
+
+`backup-sync.sh` checks every verified receipt in `STATE_DIR/receipts/`. Snapshots already present on the target bucket with a matching `complete.age` hash are skipped. Missing snapshots are copied from the local `sealed/` archive when still on disk, or downloaded and verified from `--from-env` (or `--from-local`), uploaded to the new bucket with the same two-step completion-marker check, and rebound in `.infrakit-owner`, `last-success`, `offsite-enabled` and each receipt's `proof`. Pass `--rerun` to also run a fresh `backup.sh` snapshot right after the sync finishes. Switching back and forth between two buckets stays in sync without re-encrypting or needing the offline private age key.
 
 ## Profiles
 

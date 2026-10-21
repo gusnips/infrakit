@@ -17,13 +17,16 @@ infra_require age rclone flock sha256sum tar gzip cmp sort find timeout comm
 [[ $# == 1 ]] || { infra_error 'Pass one private job file. Use --help for the profile names.'; exit 2; }
 JOB_FILE=$1
 # These values must come from the job, never from an unrelated cron environment.
-unset JOB_ID PROFILE ARCHIVE_DIR STATE_DIR R2_ENV REMOTE_PREFIX BACKUP_AGE_RECIPIENT
+unset JOB_ID PROFILE ARCHIVE_DIR STATE_DIR R2_ENV S3_ENV REMOTE_PREFIX BACKUP_AGE_RECIPIENT
 unset CONTAINER DB_USER GLOBALS_USER PG_SERVICE PG_SERVICE_FILE PG_PASS_FILE HOSTED_EXPORT_SCOPE
 unset D1_ENV D1_DOWNLOAD_HOSTS REDIS_CONFIG REDIS_PASSWORD_FILE REDIS_PORT REDIS_RDB REDIS_SOCKET REDIS_CONTAINER REDIS_WAIT_SECONDS D1_TIMEOUT_SECONDS
 unset ALERT_CONFIG HEARTBEAT_CONFIG LOCAL_REMOTE_DIR LOCAL_KEEP_DAYS REMOTE_KEEP_DAYS
-BACKEND=r2
+BACKEND=''
 DB_NAMES=(); DUMP_ARGS=(); CONFIG_PATHS=(); CONTAINER_CONFIG_PATHS=(); STORAGE_PATHS=(); D1_DOWNLOAD_HOSTS=()
 infra_source "$JOB_FILE"
+if [[ -z ${BACKEND:-} ]]; then
+    if [[ -n ${S3_ENV:-} && -z ${R2_ENV:-} ]]; then BACKEND=s3; else BACKEND=r2; fi
+fi
 for field in DB_NAMES DUMP_ARGS CONFIG_PATHS CONTAINER_CONFIG_PATHS STORAGE_PATHS D1_DOWNLOAD_HOSTS; do
     [[ $(declare -p "$field") == 'declare -a '* ]] || { infra_error "$field must be an indexed Bash array. Use parentheses in the job file."; exit 1; }
 done
@@ -69,40 +72,9 @@ done
 for field in ${!RCLONE_@}; do unset "$field"; done
 export RCLONE_CONFIG=/dev/null
 RCLONE_UP=(--transfers 1 --checkers 1)
-case $BACKEND in
-    r2)
-        [[ $EUID == 0 && $(stat -c %u -- "$JOB_FILE") == 0 ]] || { infra_error 'R2 jobs must run as root with a root-owned job file. Fix the owner and run with sudo.'; exit 1; }
-        [[ -n ${R2_ENV:-} ]] || { infra_error 'R2_ENV is missing. Point it at a root-owned private R2 file.'; exit 1; }
-        unset R2_ACCOUNT_ID R2_ENDPOINT R2_ACCESS_KEY_ID R2_SECRET_ACCESS_KEY R2_BUCKET
-        infra_source "$R2_ENV"
-        [[ $(stat -c %u -- "$R2_ENV") == 0 ]] || { infra_error 'R2_ENV is not root-owned. Fix its owner before retrying.'; exit 1; }
-        for field in R2_ACCESS_KEY_ID R2_SECRET_ACCESS_KEY R2_BUCKET; do
-            infra_single_line "${!field:-}" || { infra_error "$field is missing or invalid. Fix R2_ENV and retry."; exit 1; }
-        done
-        [[ $R2_BUCKET =~ ^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$ ]] || { infra_error 'R2_BUCKET must be a bucket name, not a path. Fix R2_ENV.'; exit 1; }
-        if [[ -z ${R2_ENDPOINT:-} ]]; then
-            [[ ${R2_ACCOUNT_ID:-} =~ ^[a-fA-F0-9]{32}$ ]] || { infra_error 'Set a valid R2_ACCOUNT_ID or HTTPS R2_ENDPOINT in R2_ENV.'; exit 1; }
-            R2_ENDPOINT="https://$R2_ACCOUNT_ID.r2.cloudflarestorage.com"
-        fi
-        [[ $R2_ENDPOINT =~ ^https://[A-Za-z0-9.-]+(:[0-9]+)?/?$ ]] || { infra_error 'R2_ENDPOINT must be a bare HTTPS origin without credentials. Fix R2_ENV.'; exit 1; }
-        export RCLONE_CONFIG_BACKUP_TYPE=s3 RCLONE_CONFIG_BACKUP_PROVIDER=Cloudflare
-        export RCLONE_CONFIG_BACKUP_ACCESS_KEY_ID="$R2_ACCESS_KEY_ID"
-        export RCLONE_CONFIG_BACKUP_SECRET_ACCESS_KEY="$R2_SECRET_ACCESS_KEY"
-        export RCLONE_CONFIG_BACKUP_ENDPOINT="$R2_ENDPOINT" RCLONE_CONFIG_BACKUP_ACL=private
-        REMOTE_ROOT="backup:$R2_BUCKET/$REMOTE_PREFIX"
-        RCLONE_UP+=(--s3-no-check-bucket --s3-no-head --s3-chunk-size 5M --s3-upload-concurrency 1)
-        ;;
-    local)
-        [[ -n ${LOCAL_REMOTE_DIR:-} ]] || { infra_error 'The local test backend needs LOCAL_REMOTE_DIR. Use a dedicated private directory.'; exit 1; }
-        infra_dir "$LOCAL_REMOTE_DIR"
-        [[ $LOCAL_REMOTE_DIR != "$ARCHIVE_DIR" && $LOCAL_REMOTE_DIR != "$STATE_DIR" && $LOCAL_REMOTE_DIR != "$ARCHIVE_DIR/"* && $LOCAL_REMOTE_DIR != "$STATE_DIR/"* && $ARCHIVE_DIR != "$LOCAL_REMOTE_DIR/"* && $STATE_DIR != "$LOCAL_REMOTE_DIR/"* ]] || {
-            infra_error 'The local remote overlaps a job directory. Use a separate directory.'; exit 1;
-        }
-        export RCLONE_CONFIG_BACKUP_TYPE=local
-        REMOTE_ROOT="backup:$LOCAL_REMOTE_DIR/$REMOTE_PREFIX"
-        ;;
-    *) infra_error 'BACKEND must be r2 or local. Local is only for isolated checks.'; exit 1 ;;
-esac
+infra_remote_config BACKUP backup "$BACKEND" "$REMOTE_PREFIX"
+REMOTE_ROOT=$INFRA_REMOTE_ROOT
+[[ $BACKEND == local ]] || RCLONE_UP+=(--s3-no-check-bucket --s3-no-head --s3-chunk-size 5M --s3-upload-concurrency 1)
 OWNER=$(printf 'infrakit-owner-v1\n%s\n%s\n%s\n' "$JOB_ID" "$ARCHIVE_DIR" "$REMOTE_ROOT")
 for directory in "$ARCHIVE_DIR" "$STATE_DIR"; do
     if [[ -e $directory/.infrakit-owner || -L $directory/.infrakit-owner ]]; then
