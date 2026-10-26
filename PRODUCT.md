@@ -10,7 +10,7 @@ The `gusnips-infra` CLI reads a host over SSH and reports findings or unverified
 
 Log policies print Docker, journald, ops-log and PM2 settings for review. A separate guarded command can preview, apply or reverse one reviewed pm2-logrotate parser fix. It changes only the local module's source file and never calls PM2 or restarts a service.
 
-Bash jobs collect database dumps, host or container Redis snapshots and explicitly listed files. They encrypt them with age and check a fresh download before recording an offsite backup. SMTP alerts and outside heartbeat pings use private configuration files. A host ping can require a recent verified backup proof.
+Bash jobs collect database dumps, host or container Redis snapshots and explicitly listed files. They encrypt them with age and check a fresh download on S3 or Cloudflare R2 before recording an offsite backup. `backup-sync.sh` copies existing backup files between providers and checks their bytes without deleting files or changing the original receipts. SMTP alerts and outside heartbeat pings use private configuration files. A host ping can require a recent verified backup proof.
 
 Disk watch checks space, inodes and a separate boot filesystem, then sends mail when warning or critical levels change or a disk recovers. Certificate sync checks a Caddy pair, updates existing PostgreSQL certificate files in place, reloads PostgreSQL and verifies its served fingerprint. If a write or verification fails, the job tries to restore the previous files and proof. It keeps recovery data when it cannot confirm that restore. The job takes the existing shared deploy lock without creating or changing it.
 
@@ -22,7 +22,7 @@ Run `gusnips-infra inspect ops@server.example.net` to read the host baseline and
 
 - The compiled CLI runs on Node.js. Bash jobs need Bash 4 or newer and GNU tools, but no JavaScript runtime.
 - Backup profiles cover PostgreSQL in Docker, self-hosted Supabase, hosted PostgreSQL, files and Cloudflare D1 exports.
-- Every uploaded artifact is encrypted. The private age key belongs off the server.
+- `backup.sh` encrypts each uploaded artifact. `backup-sync.sh` preserves existing bytes and does not encrypt old plaintext backups. The private age key belongs off the server.
 - Retention only touches snapshots this job created and verified. Other scripts' backups stay untouched.
 - Inspection checks local read-back receipts, not current remote objects. Inspection's certificate expiry comes from files, not served TLS. The separate certificate-sync job checks the served fingerprint, not a complete trust chain. Mail confirmation is a local operator record, not provider delivery history.
 - Rendering log limits installs nothing. Reloads and container recreates need separate review and approval. The source-only PM2 parser fix does not prove the running module reloaded.

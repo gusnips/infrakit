@@ -32,9 +32,13 @@ const files = (path: string, prefix = ""): string[] =>
           : [`${prefix}${entry.name}`],
       );
 const remote = (value: string | undefined) => {
-  if (!value?.startsWith("backup:"))
-    throw new Error("The fake only accepts the private local backend.");
-  return value.slice("backup:".length);
+  if (!value) throw new Error("Missing fake remote path.");
+  if (value.startsWith("backup:")) {
+    const rest = value.slice("backup:".length);
+    if (rest.startsWith("/")) return rest;
+    if (env.FAKE_S3_ROOT) return join(env.FAKE_S3_ROOT, rest);
+  }
+  throw new Error("The fake requires the isolated local or fake S3 backend.");
 };
 const hash = (file: string) =>
   createHash("sha256").update(readFileSync(file)).digest("hex");

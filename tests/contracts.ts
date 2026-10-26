@@ -1405,6 +1405,36 @@ try {
       "A redirected ping was reported as sent.",
     );
   }
+  for (const backend of ["r2", "s3"]) {
+    const f = fixture();
+    const remoteFile = join(f.dir, "remote.conf");
+    privateFile(
+      remoteFile,
+      backend === "r2"
+        ? "R2_ACCOUNT_ID=0123456789abcdef0123456789abcdef\nR2_ACCESS_KEY_ID=test-key\nR2_SECRET_ACCESS_KEY=Test-only-secret-do-not-log\nR2_BUCKET=test-bucket\n"
+        : "S3_PROVIDER=AWS\nS3_REGION=sa-east-1\nS3_ACCESS_KEY_ID=test-key\nS3_SECRET_ACCESS_KEY=Test-only-secret-do-not-log\nS3_BUCKET=test-bucket\n",
+    );
+    privateFile(
+      f.job,
+      `${f.text}\nBACKEND=${backend}\nS3_ENV=${quote(remoteFile)}\n`,
+    );
+    const extra = { FAKE_S3_ROOT: join(f.dir, "fake-s3") };
+    const result = run(f, "backup", [f.job], extra);
+    assert.equal(result.status, 0, result.output);
+    const before = lastProof(f);
+    privateFile(
+      remoteFile,
+      readFileSync(remoteFile, "utf8") +
+        "\nS3_PROVIDER=Other\nS3_REGION=auto\nS3_ENDPOINT=https://different.example.com\nS3_ACCESS_KEY_ID=key\nS3_SECRET_ACCESS_KEY=secret\nS3_BUCKET=test-bucket\n",
+    );
+    const switched = run(f, "backup", [f.job], extra);
+    assert.notEqual(
+      switched.status,
+      0,
+      "A different endpoint with the same bucket reused old state.",
+    );
+    assert.equal(lastProof(f), before);
+  }
   console.log(
     `Contracts passed: ${count} isolated fixtures, all profiles, failure controls and retention ordering.`,
   );

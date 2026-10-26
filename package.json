@@ -1,6 +1,6 @@
 {
   "name": "@gusnips/infra",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Server checks, log policies, encrypted backups, disk alerts and certificate sync",
   "type": "module",
   "license": "MIT",

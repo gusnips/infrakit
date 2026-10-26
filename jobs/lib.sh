@@ -147,3 +147,75 @@ infra_heartbeat() {
     [[ -n ${HEARTBEAT_CONFIG:-} ]] || return 0
     bash "${INFRA_JOBS}/heartbeat.sh" "$HEARTBEAT_CONFIG" "$1"
 }
+# Sets the remote path and a credential-free storage identity for the caller.
+# shellcheck disable=SC2034
+infra_remote_config() { # <section> <alias> <backend> <prefix> [env_file] [local_dir]
+    local section=$1 alias=$2 backend=$3 prefix=$4 env_file=${5:-} local_dir=${6:-${LOCAL_REMOTE_DIR:-}}
+    local provider region endpoint bucket access_key secret_key token field
+    local S3_PROVIDER='' S3_REGION='' S3_ENDPOINT='' S3_BUCKET='' S3_ACCESS_KEY_ID='' S3_SECRET_ACCESS_KEY='' S3_SESSION_TOKEN=''
+    local R2_ACCOUNT_ID='' R2_ENDPOINT='' R2_BUCKET='' R2_ACCESS_KEY_ID='' R2_SECRET_ACCESS_KEY=''
+    [[ $section =~ ^[A-Z]+$ && $alias =~ ^[a-z]+$ ]] || return 1
+    if [[ $backend == local ]]; then
+        [[ -n $local_dir ]] || { infra_error 'The local backend needs a dedicated private directory.'; return 1; }
+        infra_dir "$local_dir" || return 1
+        for field in "${ARCHIVE_DIR:-}" "${STATE_DIR:-}"; do
+            [[ -z $field || ( $field != "$local_dir" && $field != "$local_dir/"* && $local_dir != "$field/"* ) ]] || {
+                infra_error 'The local remote overlaps an archive or state directory. Use separate directories.'; return 1;
+            }
+        done
+        export "RCLONE_CONFIG_${section}_TYPE=local"
+        INFRA_REMOTE_ROOT="$alias:$local_dir${prefix:+/$prefix}"
+        INFRA_REMOTE_IDENTITY="local:$local_dir"
+        return 0
+    fi
+    [[ $backend == s3 || $backend == r2 ]] || { infra_error 'BACKEND must be s3, r2 or local.'; return 1; }
+    if [[ -z $env_file ]]; then
+        env_file=${S3_ENV:-${R2_ENV:-}}
+        if [[ $backend == r2 && -n ${R2_ENV:-} ]]; then env_file=$R2_ENV; fi
+    fi
+    [[ -n $env_file ]] || { infra_error 'S3_ENV or R2_ENV is missing. Set a private remote file and retry.'; return 1; }
+    infra_source "$env_file" || return 1
+    # Select one complete credential namespace. Never combine keys from two providers.
+    if [[ -n $S3_PROVIDER$S3_REGION$S3_ENDPOINT$S3_BUCKET$S3_ACCESS_KEY_ID$S3_SECRET_ACCESS_KEY$S3_SESSION_TOKEN ]]; then
+        provider=${S3_PROVIDER:-AWS}; region=$S3_REGION; endpoint=$S3_ENDPOINT
+        bucket=$S3_BUCKET; access_key=$S3_ACCESS_KEY_ID; secret_key=$S3_SECRET_ACCESS_KEY; token=$S3_SESSION_TOKEN
+    else
+        provider=Cloudflare; region=auto; endpoint=$R2_ENDPOINT
+        bucket=$R2_BUCKET; access_key=$R2_ACCESS_KEY_ID; secret_key=$R2_SECRET_ACCESS_KEY; token=''
+    fi
+    for field in access_key secret_key; do
+        infra_single_line "${!field}" || { infra_error 'The selected provider needs both access and secret keys. Fix the remote file.'; return 1; }
+    done
+    [[ -z $token ]] || infra_single_line "$token" || return 1
+    [[ $bucket =~ ^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$ && $bucket != *..* ]] || {
+        infra_error 'The selected provider needs a bucket name, not a path. Fix the remote file.'; return 1;
+    }
+    [[ $provider =~ ^[A-Za-z][A-Za-z0-9_-]{0,31}$ ]] || { infra_error 'S3_PROVIDER is invalid. Use an rclone S3 provider name.'; return 1; }
+    if [[ $provider == Cloudflare ]]; then
+        if [[ -z $endpoint ]]; then
+            [[ $R2_ACCOUNT_ID =~ ^[a-fA-F0-9]{32}$ ]] || { infra_error 'Cloudflare needs R2_ACCOUNT_ID or an HTTPS endpoint.'; return 1; }
+            endpoint="https://${R2_ACCOUNT_ID,,}.r2.cloudflarestorage.com"
+        fi
+        region=${region:-auto}
+    elif [[ $provider == AWS ]]; then
+        [[ $region =~ ^[a-z]{2}(-[a-z]+)+-[0-9]+$ ]] || { infra_error 'Set S3_REGION to an AWS region such as sa-east-1.'; return 1; }
+    else
+        [[ -n $endpoint ]] || { infra_error 'This S3 provider needs S3_ENDPOINT. Set its HTTPS origin.'; return 1; }
+    fi
+    [[ -z $region || $region =~ ^[a-z0-9-]+$ ]] || { infra_error 'S3_REGION is invalid. Fix the remote file.'; return 1; }
+    [[ -z $endpoint || $endpoint =~ ^https://[A-Za-z0-9.-]+(:[0-9]+)?/?$ ]] || {
+        infra_error 'The endpoint must be a bare HTTPS origin with no credentials or path.'; return 1;
+    }
+    endpoint=${endpoint%/}
+    for field in ${!RCLONE_CONFIG_@}; do
+        [[ $field != "RCLONE_CONFIG_${section}_"* ]] || unset "$field"
+    done
+    export "RCLONE_CONFIG_${section}_TYPE=s3" "RCLONE_CONFIG_${section}_PROVIDER=$provider"
+    export "RCLONE_CONFIG_${section}_ACCESS_KEY_ID=$access_key" "RCLONE_CONFIG_${section}_SECRET_ACCESS_KEY=$secret_key"
+    export "RCLONE_CONFIG_${section}_REGION=$region" "RCLONE_CONFIG_${section}_ENDPOINT=$endpoint"
+    export "RCLONE_CONFIG_${section}_SESSION_TOKEN=$token"
+    if [[ $provider == AWS && $region != us-east-1 ]]; then export "RCLONE_CONFIG_${section}_LOCATION_CONSTRAINT=$region"; fi
+    # AWS buckets normally have ACLs disabled. Omitting ACL also keeps other providers private by default.
+    INFRA_REMOTE_ROOT="$alias:$bucket${prefix:+/$prefix}"
+    INFRA_REMOTE_IDENTITY="$provider|${endpoint,,}|$region|$bucket"
+}
