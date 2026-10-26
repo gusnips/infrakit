@@ -17,7 +17,7 @@ Prints configuration text, warnings and the reloads you would need. It installs 
 ## Install the package
 
 ```sh
-npm install --global @gusnips/infra@0.1.2
+npm install --global @gusnips/infra@0.1.3
 ```
 
 The CLI needs Node.js in PATH and has no JavaScript runtime dependencies. Publishing or installing the package does not schedule a job or restart a service. `gusnips-infra install` only prints a plan; its `--apply` is refused before SSH. The PM2 parser command has its own explicit `--apply`, which changes only a reviewed local module source file and never calls PM2.
@@ -36,11 +36,11 @@ There is no automatic installer or restore automation. Inspection reads local ba
 
 ## Before the first run
 
-Jobs need Bash 4 or newer, GNU coreutils, GNU find, GNU tar, gzip, curl, flock, age and rclone 1.75.2 or newer. Hosted PostgreSQL needs `pg_dump` and `pg_restore` clients at least as new as the database server. Docker PostgreSQL profiles need Docker access and use the dump and restore tools inside the named container; no host PostgreSQL client is needed. D1 needs jq and SQLite with `-safe` support. Host Redis needs redis-cli; container Redis uses redis-cli inside its container. Redis 7 or newer is required.
+Jobs need Bash 4 or newer, GNU coreutils, GNU find, GNU tar, gzip, curl, flock, age and rclone 1.75.2 or newer. Hosted PostgreSQL needs `pg_dump` and `pg_restore` clients at least as new as the database server. Docker PostgreSQL profiles need Docker access and use the dump and restore tools inside the named container; no host PostgreSQL client is needed. D1 needs jq and SQLite with `-safe` support. The copy job needs jq too. Host Redis needs redis-cli; container Redis uses redis-cli inside its container. Redis 7 or newer is required.
 
 Configuration files are trusted Bash code, not dotenv or JSON. Use assignments and indexed arrays. Every file that is sourced, plus libpq service/password files and Redis password files, must be a regular, single-link `0600` file. Its owner and every ancestor must be root or the job's user, with no group or other write access. Symlinks, relative paths, `.`/`..` segments and world-writable parents are refused before sourcing. This includes `/tmp`. Configuration is not a sandbox: its owner can run code as the job's user.
 
-R2 jobs must run as root with root-owned job and R2 files. Keep configuration under a root-owned private directory such as `/etc/infrakit` (`0700`). Never put a password, API token or private age key in a command line. Keep the private age key off the server and test its recovery copies separately.
+Run jobs with private files controlled by the job's user or root. Keep configuration under a protected directory such as `/etc/infrakit` (`0700`). Never put a password, API token or private age key in a command line. Keep the private age key off the server and test its recovery copies separately.
 
 Start with new, empty directories. Existing job directories must be owned by the job's user at `0700`. Do not use a system root or overlap the archive, state and local test remote. The runner never adopts another script's backups. A failed directory read stops adoption; it does not mean the directory is empty. Existing state files must be single-link `0600` files owned by the job's user. A directory, link or unsafe file at a proof path is refused without replacing it.
 
@@ -101,17 +101,33 @@ R2_SECRET_ACCESS_KEY='replace-with-your-secret-key'
 R2_BUCKET='your-backup-bucket'
 ```
 
-You can set `S3_ENDPOINT` or `R2_ENDPOINT` for another S3-compatible provider (with `S3_PROVIDER='Other'`), or instead of `R2_ACCOUNT_ID`. It must be a bare HTTPS origin, without a path or credentials. Missing remote or age settings fail; they never become a local-only success. Rclone reads credentials from its process environment, not argv or a shared rclone config. Uploads use `--s3-no-head`; verification still downloads every encrypted object.
+Choose one credential format. An explicit `S3_PROVIDER` uses the complete `S3_*` key and bucket settings; it never fills a missing S3 key from `R2_*`. With no S3 settings, legacy `R2_*` files keep working. `S3_SESSION_TOKEN` is optional for temporary credentials.
 
-### Switching providers and smart sync
+AWS needs `S3_REGION`; leave `S3_ENDPOINT` unset for AWS's regional endpoint. Other S3-compatible providers use `S3_PROVIDER='Other'` and `S3_ENDPOINT`. Cloudflare also accepts `S3_PROVIDER='Cloudflare'` with S3 keys and an endpoint. `R2_ENDPOINT` can replace `R2_ACCOUNT_ID` in a legacy file. Endpoints must be bare HTTPS origins, without a path or credentials. Missing remote or age settings fail; they never become a local-only success. Rclone reads credentials from its process environment, not argv or a shared rclone config. Uploads use `--s3-no-head`; verification still downloads every encrypted object. The runner sets no object ACL, so AWS buckets with ACLs disabled work.
 
-When moving a job between S3 and R2 (or seeding a new bucket for the first time), update `S3_ENV` or `R2_ENV` in the job file and run `backup-sync.sh`:
+### Copy existing backups to another provider
 
 ```sh
-bash "$(npm root -g)/@gusnips/infra/jobs/backup-sync.sh" /etc/infrakit/nightly.conf --from-env /etc/infrakit/previous-remote.conf
+bash /opt/infrakit/0.1.3/jobs/backup-sync.sh /etc/infrakit/sync.conf
 ```
 
-`backup-sync.sh` checks every verified receipt in `STATE_DIR/receipts/`. Snapshots already present on the target bucket with a matching `complete.age` hash are skipped. Missing snapshots are copied from the local `sealed/` archive when still on disk, or downloaded and verified from `--from-env` (or `--from-local`), uploaded to the new bucket with the same two-step completion-marker check, and rebound in `.infrakit-owner`, `last-success`, `offsite-enabled` and each receipt's `proof`. Pass `--rerun` to also run a fresh `backup.sh` snapshot right after the sync finishes. Switching back and forth between two buckets stays in sync without re-encrypting or needing the offline private age key.
+This copies existing files and checks their bytes at the destination. The first run copies the history. Later runs transfer missing files and still check the source files against the destination. It never deletes files, changes the active provider or rewrites backup receipts. Existing destination files with different bytes stop the job rather than being replaced.
+
+Use a private `0600` Bash file for the transfer:
+
+```bash
+SOURCE_ENV=/etc/infrakit/r2.conf
+TARGET_ENV=/etc/infrakit/s3.conf
+SOURCE_PREFIX=backups/nightly
+TARGET_PREFIX=backups/nightly
+STATE_DIR=/var/lib/infrakit/copy-nightly-to-s3
+```
+
+The two remote files use the S3 or R2 settings above. Use separate credentials, with read-only source access and target write access limited to the selected prefix. Keep writers paused while copying the selected source. A failed read, empty source, changed inventory or failed byte check stops the run. Read-back checks use network traffic and may incur provider charges.
+
+The copy keeps the original bytes, including encryption and completion markers. It needs no private age key. Copy only complete backup sets; a byte check cannot make an incomplete source recoverable. A logical dump, an encrypted snapshot and a physical PostgreSQL repository have different recovery rules. This generic command refuses pgBackRest repository trees: use pgBackRest's own repository setup and a reviewed WAL migration procedure for those. It does not copy bucket version history, delete markers, lifecycle policies or access rules.
+
+For a fresh backup, run `backup.sh` with the chosen provider's job file. Use a separate archive and state directory per provider. Historical copies are not adopted by the new job's retention, and their original receipts remain unchanged. Version 0.1.2 cloud-state directories did not record provider identity; keep them and use new directories when adopting this release. Switching back means copying from the currently active provider to the other one, then running that provider's existing job. Never delete or edit ownership markers to force a switch.
 
 ## Profiles
 
@@ -267,6 +283,7 @@ bun tests/log-policy.test.ts /absolute/pm2-logrotate/package /absolute/pmx/packa
 bash tests/diskwatch.test.sh
 bash tests/cert-sync.test.sh
 bash tests/heartbeat.test.sh
+bash tests/backup-sync.test.sh
 bun run check
 ```
 

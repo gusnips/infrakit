@@ -76,6 +76,8 @@ infra_remote_config BACKUP backup "$BACKEND" "$REMOTE_PREFIX"
 REMOTE_ROOT=$INFRA_REMOTE_ROOT
 [[ $BACKEND == local ]] || RCLONE_UP+=(--s3-no-check-bucket --s3-no-head --s3-chunk-size 5M --s3-upload-concurrency 1)
 OWNER=$(printf 'infrakit-owner-v1\n%s\n%s\n%s\n' "$JOB_ID" "$ARCHIVE_DIR" "$REMOTE_ROOT")
+HAD_OWNER=0
+[[ ! -e $ARCHIVE_DIR/.infrakit-owner && ! -e $STATE_DIR/.infrakit-owner ]] || HAD_OWNER=1
 for directory in "$ARCHIVE_DIR" "$STATE_DIR"; do
     if [[ -e $directory/.infrakit-owner || -L $directory/.infrakit-owner ]]; then
         infra_private "$directory/.infrakit-owner"
@@ -89,6 +91,22 @@ for directory in "$ARCHIVE_DIR" "$STATE_DIR"; do
             infra_error 'A job directory is not empty and has no ownership marker. Choose a new empty directory.'; exit 1
         fi
         printf '%s\n' "$OWNER" | infra_atomic "$directory/.infrakit-owner"
+    fi
+done
+# Bind provider identity separately from the unchanged five-line snapshot proof.
+# A bucket name alone cannot distinguish AWS from an identically named R2 bucket.
+for directory in "$ARCHIVE_DIR" "$STATE_DIR"; do
+    identity_file="$directory/.infrakit-remote"
+    if [[ -e $identity_file || -L $identity_file ]]; then
+        infra_private "$identity_file"
+        [[ $(<"$identity_file") == "$INFRA_REMOTE_IDENTITY" ]] || {
+            infra_error 'The storage provider changed. Use separate archive and state directories for that provider; keep the old proofs.'; exit 1;
+        }
+    else
+        if [[ $HAD_OWNER == 1 && $BACKEND != local ]]; then
+            infra_error 'These old state files do not record the storage provider. Keep them and start with new archive and state directories.'; exit 1
+        fi
+        printf '%s\n' "$INFRA_REMOTE_IDENTITY" | infra_atomic "$identity_file"
     fi
 done
 infra_dir "$STATE_DIR/receipts"

@@ -1405,119 +1405,35 @@ try {
       "A redirected ping was reported as sent.",
     );
   }
-  {
+  for (const backend of ["r2", "s3"]) {
     const f = fixture();
-    const s3Root = join(f.dir, "fake-s3");
-    mkdirSync(s3Root, { mode: 0o700 });
-    const r2Conf = join(f.dir, "r2.conf");
+    const remoteFile = join(f.dir, "remote.conf");
     privateFile(
-      r2Conf,
-      "R2_ACCOUNT_ID=0123456789abcdef0123456789abcdef\nR2_ACCESS_KEY_ID=r2-access\nR2_SECRET_ACCESS_KEY=Test-only-secret-do-not-log\nR2_BUCKET=r2-backup-bucket\n",
+      remoteFile,
+      backend === "r2"
+        ? "R2_ACCOUNT_ID=0123456789abcdef0123456789abcdef\nR2_ACCESS_KEY_ID=test-key\nR2_SECRET_ACCESS_KEY=Test-only-secret-do-not-log\nR2_BUCKET=test-bucket\n"
+        : "S3_PROVIDER=AWS\nS3_REGION=sa-east-1\nS3_ACCESS_KEY_ID=test-key\nS3_SECRET_ACCESS_KEY=Test-only-secret-do-not-log\nS3_BUCKET=test-bucket\n",
     );
-    const s3Conf = join(f.dir, "s3.conf");
-    privateFile(
-      s3Conf,
-      "S3_PROVIDER=AWS\nS3_REGION=sa-east-1\nS3_ACCESS_KEY_ID=s3-access\nS3_SECRET_ACCESS_KEY=Test-only-secret-do-not-log\nS3_BUCKET=s3-backup-bucket\n",
-    );
-    const badS3 = join(f.dir, "bad-s3.conf");
-    privateFile(
-      badS3,
-      "S3_PROVIDER=AWS\nS3_ACCESS_KEY_ID=s3-access\nS3_SECRET_ACCESS_KEY=Test-only-secret-do-not-log\nS3_BUCKET=s3-backup-bucket\n",
-    );
-    privateFile(f.job, `${f.text}\nBACKEND=s3\nS3_ENV=${quote(badS3)}\n`);
-    assert.notEqual(
-      run(f, "backup", [f.job], { FAKE_S3_ROOT: s3Root }).status,
-      0,
-      "AWS S3 without S3_REGION was accepted.",
-    );
-
-    const envCapture = join(f.dir, "rclone-env.json");
-    privateFile(f.job, `${f.text}\nBACKEND=r2\nR2_ENV=${quote(r2Conf)}\n`);
-    const r2Run = run(f, "backup", [f.job], {
-      FAKE_S3_ROOT: s3Root,
-      FAKE_RCLONE_ENV_CAPTURE: envCapture,
-    });
-    assert.equal(r2Run.status, 0, r2Run.output);
-    const r2Env = JSON.parse(readFileSync(envCapture, "utf8")) as Record<
-      string,
-      string
-    >;
-    assert.equal(r2Env.RCLONE_CONFIG_BACKUP_PROVIDER, "Cloudflare");
-    assert.equal(
-      r2Env.RCLONE_CONFIG_BACKUP_ENDPOINT,
-      "https://0123456789abcdef0123456789abcdef.r2.cloudflarestorage.com",
-    );
-    const snap1 = lastProof(f).trimEnd().split("\n")[2] ?? "";
-
-    // Switching to S3 without syncing fails backup.sh because .infrakit-owner still binds to R2.
     privateFile(
       f.job,
-      `${f.text}\nBACKEND=s3\nS3_ENV=${quote(s3Conf)}\nunset R2_ENV\n`,
+      `${f.text}\nBACKEND=${backend}\nS3_ENV=${quote(remoteFile)}\n`,
     );
-    assert.notEqual(
-      run(f, "backup", [f.job], { FAKE_S3_ROOT: s3Root }).status,
-      0,
-      "backup.sh allowed a remote switch without backup-sync.sh.",
-    );
-
-    // Prune local sealed copy of snap1 so backup-sync.sh must use --from-env to pull from R2.
-    rmSync(join(f.archive, snap1, "sealed"), { recursive: true });
-    assert.notEqual(
-      run(f, "backup-sync", [f.job], { FAKE_S3_ROOT: s3Root }).status,
-      0,
-      "backup-sync.sh passed when a snapshot was missing locally and no --from-env was given.",
-    );
-
-    const syncToS3 = run(
-      f,
-      "backup-sync",
-      [f.job, "--from-env", r2Conf, "--rerun"],
-      { FAKE_S3_ROOT: s3Root, FAKE_RCLONE_ENV_CAPTURE: envCapture },
-    );
-    assert.equal(syncToS3.status, 0, syncToS3.output);
-    assert(
-      syncToS3.output.includes("Sync verified: 1 uploaded, 0 already present"),
-    );
-    assert(syncToS3.output.includes("Offsite verified:"));
-    const s3Env = JSON.parse(readFileSync(envCapture, "utf8")) as Record<
-      string,
-      string
-    >;
-    assert.equal(s3Env.RCLONE_CONFIG_BACKUP_PROVIDER, "AWS");
-    assert.equal(s3Env.RCLONE_CONFIG_BACKUP_REGION, "sa-east-1");
-    assert.equal(s3Env.RCLONE_CONFIG_BACKUP_LOCATION_CONSTRAINT, "sa-east-1");
-    const snap2 = lastProof(f).trimEnd().split("\n")[2] ?? "";
-    assert.notEqual(snap2, snap1);
-    assert(
-      existsSync(
-        join(s3Root, "s3-backup-bucket/test/nightly", snap1, "complete.age"),
-      ) &&
-        existsSync(
-          join(s3Root, "s3-backup-bucket/test/nightly", snap2, "complete.age"),
-        ),
-    );
-    const hb = hostConfig(f);
-    assert.equal(run(f, "heartbeat", [hb]).status, 0);
-
-    // Switch back to R2: snap1 is already on R2 (skipped), snap2 is synced from local sealed.
+    const extra = { FAKE_S3_ROOT: join(f.dir, "fake-s3") };
+    const result = run(f, "backup", [f.job], extra);
+    assert.equal(result.status, 0, result.output);
+    const before = lastProof(f);
     privateFile(
-      f.job,
-      `${f.text}\nBACKEND=r2\nR2_ENV=${quote(r2Conf)}\nunset S3_ENV\n`,
+      remoteFile,
+      readFileSync(remoteFile, "utf8") +
+        "\nS3_PROVIDER=Other\nS3_REGION=auto\nS3_ENDPOINT=https://different.example.com\nS3_ACCESS_KEY_ID=key\nS3_SECRET_ACCESS_KEY=secret\nS3_BUCKET=test-bucket\n",
     );
-    const syncBackToR2 = run(f, "backup-sync", [f.job], {
-      FAKE_S3_ROOT: s3Root,
-    });
-    assert.equal(syncBackToR2.status, 0, syncBackToR2.output);
-    assert(
-      syncBackToR2.output.includes(
-        "Sync verified: 1 uploaded, 1 already present on backup:r2-backup-bucket/test/nightly.",
-      ),
+    const switched = run(f, "backup", [f.job], extra);
+    assert.notEqual(
+      switched.status,
+      0,
+      "A different endpoint with the same bucket reused old state.",
     );
-    assert(
-      existsSync(
-        join(s3Root, "r2-backup-bucket/test/nightly", snap2, "complete.age"),
-      ),
-    );
+    assert.equal(lastProof(f), before);
   }
   console.log(
     `Contracts passed: ${count} isolated fixtures, all profiles, failure controls and retention ordering.`,
