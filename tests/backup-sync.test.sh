@@ -29,6 +29,18 @@ if [[ ${TEST_FAIL:-} == mutate && $1 == copy ]]; then
   printf 'late addition\n' >"$TEST_SOURCE/late.age"
   exit 0
 fi
+if [[ ${TEST_FAIL:-} == late-marker && $1 == check ]]; then
+  "$REAL_RCLONE" "$@"
+  mkdir -p "$TEST_SOURCE/late-snapshot"
+  printf 'late payload\n' >"$TEST_SOURCE/late-snapshot/payload.age"
+  printf 'late completion\n' >"$TEST_SOURCE/late-snapshot/complete.age"
+  exit 0
+fi
+if [[ ${TEST_FAIL:-} == marker-pass && $1 == copy && $* == *'/marker-files'* ]]; then
+  mkdir -p "$TEST_SOURCE/during-marker"
+  printf 'new payload\n' >"$TEST_SOURCE/during-marker/payload.age"
+  printf 'new completion\n' >"$TEST_SOURCE/during-marker/complete.age"
+fi
 exec "$REAL_RCLONE" "$@"
 SH
 chmod 700 "$WORK/bin/rclone"
@@ -65,6 +77,24 @@ done
 unset TEST_FAIL
 run
 cmp "$WORK/source/pending/complete.age" "$WORK/target/pending/complete.age"
+export TEST_FAIL=late-marker
+cp "$WORK/state/last-copy" "$WORK/proof"
+fails 'new snapshot between payload verification and marker copy'
+[[ ! -e $WORK/target/late-snapshot/complete.age ]]
+cmp "$WORK/proof" "$WORK/state/last-copy"
+unset TEST_FAIL
+run
+cmp "$WORK/source/late-snapshot/payload.age" "$WORK/target/late-snapshot/payload.age"
+cmp "$WORK/source/late-snapshot/complete.age" "$WORK/target/late-snapshot/complete.age"
+export TEST_FAIL=marker-pass
+cp "$WORK/state/last-copy" "$WORK/proof"
+fails 'new snapshot after staged inventory, during the marker copy'
+[[ ! -e $WORK/target/during-marker/complete.age ]]
+cmp "$WORK/proof" "$WORK/state/last-copy"
+unset TEST_FAIL
+run
+cmp "$WORK/source/during-marker/payload.age" "$WORK/target/during-marker/payload.age"
+cmp "$WORK/source/during-marker/complete.age" "$WORK/target/during-marker/complete.age"
 export TEST_FAIL=mutate
 fails 'source changed during copy'
 unset TEST_FAIL
@@ -88,6 +118,54 @@ fails 'same source and target'
 cp "$WORK/clean.conf" "$WORK/sync.conf"
 printf 'SOURCE_PREFIX=../unsafe\n' >>"$WORK/sync.conf"
 fails 'unsafe prefix'
+# Equivalent endpoint spellings must identify the same store without making network calls.
+config_id() {
+  bash -c 'source "$1"; infra_runtime; infra_remote_config SOURCE source s3 test "$2"; printf "%s\n" "$INFRA_REMOTE_IDENTITY"' config-id "$ROOT/jobs/lib.sh" "$1"
+}
+cat >"$WORK/remote.conf" <<EOF
+S3_PROVIDER=Cloudflare
+S3_ACCESS_KEY_ID=fixture-key
+S3_SECRET_ACCESS_KEY=fixture-secret
+S3_BUCKET=fixture-bucket
+S3_ENDPOINT=https://objects.example.com
+EOF
+chmod 600 "$WORK/remote.conf"
+plain_id=$(config_id "$WORK/remote.conf")
+printf 'S3_ENDPOINT=https://OBJECTS.example.com:443/\nS3_REGION=auto\n' >>"$WORK/remote.conf"
+[[ $(config_id "$WORK/remote.conf") == "$plain_id" ]]
+printf 'S3_ENDPOINT=https://objects.example.com:00443\n' >>"$WORK/remote.conf"
+[[ $(config_id "$WORK/remote.conf") == "$plain_id" ]]
+printf 'S3_ENDPOINT=https://objects.example.com:8443\n' >>"$WORK/remote.conf"
+[[ $(config_id "$WORK/remote.conf") != "$plain_id" ]]
+printf 'S3_ENDPOINT=https://objects.example.com\nS3_PROVIDER=Other\nS3_REGION=custom\n' >>"$WORK/remote.conf"
+[[ $(config_id "$WORK/remote.conf") == "$plain_id" ]]
+# AWS's inferred endpoint and an explicit regional endpoint are also one location.
+cat >"$WORK/remote.conf" <<EOF
+S3_PROVIDER=AWS
+S3_ACCESS_KEY_ID=fixture-key
+S3_SECRET_ACCESS_KEY=fixture-secret
+S3_BUCKET=fixture-bucket
+S3_REGION=sa-east-1
+EOF
+aws_id=$(config_id "$WORK/remote.conf")
+printf 'S3_ENDPOINT=https://s3.sa-east-1.amazonaws.com:443/\n' >>"$WORK/remote.conf"
+[[ $(config_id "$WORK/remote.conf") == "$aws_id" ]]
+printf 'S3_PROVIDER=Other\n' >>"$WORK/remote.conf"
+[[ $(config_id "$WORK/remote.conf") == "$aws_id" ]]
+cp "$WORK/remote.conf" "$WORK/equivalent.conf"
+printf "S3_PROVIDER=AWS\nS3_ENDPOINT=''\n" >>"$WORK/equivalent.conf"
+cat >"$WORK/sync.conf" <<EOF
+SOURCE_ENV=$WORK/remote.conf
+TARGET_ENV=$WORK/equivalent.conf
+SOURCE_PREFIX=history
+TARGET_PREFIX=history/nested
+STATE_DIR=$WORK/overlap-state
+EOF
+# Even if a later remote listing would fail, overlap must be refused first without a request.
+export TEST_FAIL=list
+fails 'same bucket reached through equivalent AWS endpoints'
+grep -q 'Source and target overlap' "$WORK/out"
+unset TEST_FAIL
 # Private configuration must be enforced before a transfer starts.
 cp "$WORK/clean.conf" "$WORK/sync.conf"
 chmod 644 "$WORK/sync.conf"

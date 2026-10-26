@@ -151,7 +151,7 @@ infra_heartbeat() {
 # shellcheck disable=SC2034
 infra_remote_config() { # <section> <alias> <backend> <prefix> [env_file] [local_dir]
     local section=$1 alias=$2 backend=$3 prefix=$4 env_file=${5:-} local_dir=${6:-${LOCAL_REMOTE_DIR:-}}
-    local provider region endpoint bucket access_key secret_key token field
+    local provider region endpoint bucket access_key secret_key token field identity_endpoint port
     local S3_PROVIDER='' S3_REGION='' S3_ENDPOINT='' S3_BUCKET='' S3_ACCESS_KEY_ID='' S3_SECRET_ACCESS_KEY='' S3_SESSION_TOKEN=''
     local R2_ACCOUNT_ID='' R2_ENDPOINT='' R2_BUCKET='' R2_ACCESS_KEY_ID='' R2_SECRET_ACCESS_KEY=''
     [[ $section =~ ^[A-Z]+$ && $alias =~ ^[a-z]+$ ]] || return 1
@@ -206,7 +206,35 @@ infra_remote_config() { # <section> <alias> <backend> <prefix> [env_file] [local
     [[ -z $endpoint || $endpoint =~ ^https://[A-Za-z0-9.-]+(:[0-9]+)?/?$ ]] || {
         infra_error 'The endpoint must be a bare HTTPS origin with no credentials or path.'; return 1;
     }
+    endpoint=${endpoint,,}
     endpoint=${endpoint%/}
+    if [[ $endpoint =~ :([0-9]+)$ ]]; then
+        [[ ${#BASH_REMATCH[1]} -le 5 ]] && (( 10#${BASH_REMATCH[1]} >= 1 && 10#${BASH_REMATCH[1]} <= 65535 )) || {
+            infra_error 'The HTTPS endpoint port must be 1 to 65535.'; return 1;
+        }
+        port=$((10#${BASH_REMATCH[1]}))
+        endpoint=${endpoint%:*}
+        if (( port != 443 )); then endpoint+=":$port"; fi
+    fi
+    identity_endpoint=$endpoint
+    if [[ -z $identity_endpoint && $provider == AWS ]]; then
+        if [[ $region == cn-* ]]; then
+            identity_endpoint="https://s3.$region.amazonaws.com.cn"
+        else
+            identity_endpoint="https://s3.$region.amazonaws.com"
+        fi
+    fi
+    # Region and signing-provider labels do not create a second copy at the same endpoint.
+    # Standard AWS regional hosts share one bucket namespace within their partition.
+    if [[ $identity_endpoint =~ ^https://s3([.-](dualstack\.)?[a-z0-9-]+)?\.amazonaws\.com(\.cn)?$ ]]; then
+        if [[ $identity_endpoint == *.amazonaws.com.cn ]]; then
+            identity_endpoint=https://s3.amazonaws.com.cn
+        elif [[ $identity_endpoint == *us-gov-* ]]; then
+            identity_endpoint=https://s3.us-gov.amazonaws.com
+        else
+            identity_endpoint=https://s3.amazonaws.com
+        fi
+    fi
     for field in ${!RCLONE_CONFIG_@}; do
         [[ $field != "RCLONE_CONFIG_${section}_"* ]] || unset "$field"
     done
@@ -217,5 +245,5 @@ infra_remote_config() { # <section> <alias> <backend> <prefix> [env_file] [local
     if [[ $provider == AWS && $region != us-east-1 ]]; then export "RCLONE_CONFIG_${section}_LOCATION_CONSTRAINT=$region"; fi
     # AWS buckets normally have ACLs disabled. Omitting ACL also keeps other providers private by default.
     INFRA_REMOTE_ROOT="$alias:$bucket${prefix:+/$prefix}"
-    INFRA_REMOTE_IDENTITY="$provider|${endpoint,,}|$region|$bucket"
+    INFRA_REMOTE_IDENTITY="s3|$identity_endpoint|$bucket"
 }
