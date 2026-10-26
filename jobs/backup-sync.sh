@@ -94,14 +94,20 @@ inventory() {
 }
 case /$SOURCE_PREFIX/ in */pgbackrest/*) infra_error 'Use pgBackRest tooling for physical repository migration.'; exit 1 ;; esac
 inventory before
+step file-list jq -r '.[].Path' "$RUN/before.json" >"$RUN/files"
+step payload-list jq -r '.[] | select((.Path | split("/") | last) != "complete.age") | .Path' "$RUN/before.json" >"$RUN/payload-files"
+step marker-list jq -r '.[] | select((.Path | split("/") | last) == "complete.age") | .Path' "$RUN/before.json" >"$RUN/marker-files"
 infra_log 'Copying missing backup files. Existing files will not be replaced.'
-# checksum detects changed objects where both providers expose a common hash. The downloaded
-# check below also detects same-size corruption when their hashes cannot be compared.
-step copy rclone copy "$SOURCE" "$TARGET" --exclude '**/complete.age' --immutable --checksum --transfers 1 --checkers 1 --s3-no-check-bucket --s3-no-head >"$RUN/copy.out"
-step verify-payload rclone check "$SOURCE" "$TARGET" --exclude '**/complete.age' --download --one-way --checkers 1 >"$RUN/verify-payload.out"
-# Completion markers follow verified payloads, just as they do in backup.sh.
-step copy-markers rclone copy "$SOURCE" "$TARGET" --include '**/complete.age' --immutable --checksum --transfers 1 --checkers 1 --s3-no-check-bucket --s3-no-head >"$RUN/copy-markers.out"
-step verify rclone check "$SOURCE" "$TARGET" --download --one-way --checkers 1 >"$RUN/verify.out"
+# Every pass uses exact paths from the same inventory. A late snapshot cannot add a marker
+# to the marker pass after its payload was excluded from the verified payload set.
+step copy rclone copy "$SOURCE" "$TARGET" --files-from-raw "$RUN/payload-files" --immutable --checksum --transfers 1 --checkers 1 --s3-no-check-bucket --s3-no-head >"$RUN/copy.out"
+step verify-payload rclone check "$SOURCE" "$TARGET" --files-from-raw "$RUN/payload-files" --download --one-way --checkers 1 >"$RUN/verify-payload.out"
+inventory staged
+cmp -s "$RUN/before.json" "$RUN/staged.json" || {
+    infra_error 'The source changed before completion markers could be copied. Pause its writers and retry; no success record was saved.'; exit 1;
+}
+step copy-markers rclone copy "$SOURCE" "$TARGET" --files-from-raw "$RUN/marker-files" --immutable --checksum --transfers 1 --checkers 1 --s3-no-check-bucket --s3-no-head >"$RUN/copy-markers.out"
+step verify rclone check "$SOURCE" "$TARGET" --files-from-raw "$RUN/files" --download --one-way --checkers 1 >"$RUN/verify.out"
 inventory after
 cmp -s "$RUN/before.json" "$RUN/after.json" || {
     infra_error 'The source changed during the copy. Pause its writers and retry; no success record was saved.'; exit 1;

@@ -17,7 +17,7 @@ Prints configuration text, warnings and the reloads you would need. It installs 
 ## Install the package
 
 ```sh
-npm install --global @gusnips/infra@0.1.3
+npm install --global @gusnips/infra@0.1.4
 ```
 
 The CLI needs Node.js in PATH and has no JavaScript runtime dependencies. Publishing or installing the package does not schedule a job or restart a service. `gusnips-infra install` only prints a plan; its `--apply` is refused before SSH. The PM2 parser command has its own explicit `--apply`, which changes only a reviewed local module source file and never calls PM2.
@@ -108,7 +108,7 @@ AWS needs `S3_REGION`; leave `S3_ENDPOINT` unset for AWS's regional endpoint. Ot
 ### Copy existing backups to another provider
 
 ```sh
-bash /opt/infrakit/0.1.3/jobs/backup-sync.sh /etc/infrakit/sync.conf
+bash /opt/infrakit/0.1.4/jobs/backup-sync.sh /etc/infrakit/sync.conf
 ```
 
 This copies existing files and checks their bytes at the destination. The first run copies the history. Later runs transfer missing files and still check the source files against the destination. It never deletes files, changes the active provider or rewrites backup receipts. Existing destination files with different bytes stop the job rather than being replaced.
@@ -124,6 +124,10 @@ STATE_DIR=/var/lib/infrakit/copy-nightly-to-s3
 ```
 
 The two remote files use the S3 or R2 settings above. Use separate credentials, with read-only source access and target write access limited to the selected prefix. Keep writers paused while copying the selected source. A failed read, empty source, changed inventory or failed byte check stops the run. Read-back checks use network traffic and may incur provider charges.
+
+The copy pins exact file paths from its first listing. Completion markers are copied only from that list, after its payloads pass the byte check. A new snapshot appearing later is not picked up halfway through the transfer. The source must still remain paused: this is a copy, not a transactional storage snapshot.
+
+Equivalent HTTPS endpoints (case, trailing slash and port 443) share a storage identity. Standard AWS regional endpoints and the inferred AWS endpoint share a bucket identity too. Changing a signing provider label does not create a second store. Version 0.1.3 used a different identity format; keep its state intact and use new transfer state, archive and backup-state directories rather than editing ownership markers.
 
 The copy keeps the original bytes, including encryption and completion markers. It needs no private age key. Copy only complete backup sets; a byte check cannot make an incomplete source recoverable. A logical dump, an encrypted snapshot and a physical PostgreSQL repository have different recovery rules. This generic command refuses pgBackRest repository trees: use pgBackRest's own repository setup and a reviewed WAL migration procedure for those. It does not copy bucket version history, delete markers, lifecycle policies or access rules.
 
