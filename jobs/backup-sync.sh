@@ -14,7 +14,7 @@ fi
 [[ $# == 1 ]] || { infra_error 'Pass one private sync file. Run with --help for usage.'; exit 2; }
 infra_runtime
 infra_require rclone jq flock sha256sum cmp find sort
-unset SOURCE_ENV TARGET_ENV SOURCE_PREFIX TARGET_PREFIX SOURCE_LOCAL_DIR TARGET_LOCAL_DIR STATE_DIR
+unset SOURCE_ENV TARGET_ENV SOURCE_PREFIX TARGET_PREFIX SOURCE_LOCAL_DIR TARGET_LOCAL_DIR STATE_DIR VERIFY_ALL
 JOB_FILE=$1
 infra_source "$JOB_FILE"
 [[ -n ${STATE_DIR:-} ]] || { infra_error 'STATE_DIR is missing. Use a dedicated private sync directory.'; exit 1; }
@@ -67,9 +67,15 @@ else
     printf '%s\n' "$OWNER" | infra_atomic "$STATE_DIR/.infrakit-sync-owner"
 fi
 RUN=$(mktemp -d "$STATE_DIR/run-XXXXXX")
+# Keep the newest 7 run folders (inventories and private error output). Older ones only fill the disk.
+find "$STATE_DIR" -mindepth 1 -maxdepth 1 -type d -name 'run-*' -printf '%T@ %p\0' | sort -z -rn | tail -z -n +8 | cut -z -d' ' -f2- | xargs -0 -r rm -rf --
 step() {
     local label=$1; shift
     "$@" 2>"$RUN/$label.err" || { infra_error "$label failed. Read private details in $RUN/$label.err and retry. Existing backup proofs were not changed."; return 1; }
+}
+check_listed() { # <label> <list file> [rclone flags]: an empty list has nothing to check
+    [[ -s $2 ]] || return 0
+    step "$1" rclone check "$SOURCE" "$TARGET" --files-from-raw "$2" --one-way --checkers 1 "${@:3}" >"$RUN/$1.out"
 }
 trap 'infra_error "Copy interrupted. Retry the same config; private details remain in $RUN."; exit 130' INT
 trap 'infra_error "Copy interrupted. Retry the same config; private details remain in $RUN."; exit 143' TERM
@@ -94,24 +100,49 @@ inventory() {
 }
 case /$SOURCE_PREFIX/ in */pgbackrest/*) infra_error 'Use pgBackRest tooling for physical repository migration.'; exit 1 ;; esac
 inventory before
-step file-list jq -r '.[].Path' "$RUN/before.json" >"$RUN/files"
 step payload-list jq -r '.[] | select((.Path | split("/") | last) != "complete.age") | .Path' "$RUN/before.json" >"$RUN/payload-files"
 step marker-list jq -r '.[] | select((.Path | split("/") | last) == "complete.age") | .Path' "$RUN/before.json" >"$RUN/marker-files"
+# A download from S3 is billed as outbound traffic, so a file is downloaded for the byte check only until
+# it has passed once. STATE_DIR/verified.json lists the files that passed; one counts as proven only while
+# the destination still holds it at the same size. Proven files are compared by size and hash, which needs
+# no download. VERIFY_ALL=1 in the job file, or no verified.json, makes every file count as new.
+step target-list rclone lsjson "$TARGET" --recursive --files-only >"$RUN/target.json"
+if [[ ${VERIFY_ALL:-} != 1 && ( -e $STATE_DIR/verified.json || -L $STATE_DIR/verified.json ) ]]; then
+    infra_private "$STATE_DIR/verified.json"
+    cp -- "$STATE_DIR/verified.json" "$RUN/proven.json"
+else
+    printf '[]\n' >"$RUN/proven.json"
+fi
+step proven-validate jq -e 'type == "array" and all(.[]; (.Path | type == "string") and (.Size | type == "number"))' "$RUN/proven.json" >/dev/null
+# shellcheck disable=SC2016
+PROVEN_FILTER='($dest[0] | map({key: .Path, value: .Size}) | from_entries) as $present
+    | ($proven[0] | map({key: .Path, value: .Size}) | from_entries) as $done
+    | .[] | select((($present[.Path] == .Size) and ($done[.Path] == .Size)) == $want) | .Path'
+step new-list jq -r --argjson want false --slurpfile dest "$RUN/target.json" --slurpfile proven "$RUN/proven.json" "$PROVEN_FILTER" "$RUN/before.json" >"$RUN/new-files"
+step old-list jq -r --argjson want true --slurpfile dest "$RUN/target.json" --slurpfile proven "$RUN/proven.json" "$PROVEN_FILTER" "$RUN/before.json" >"$RUN/old-files"
+step new-payload-list jq -R -r 'select((split("/") | last) != "complete.age")' "$RUN/new-files" >"$RUN/new-payload-files"
+step new-marker-list jq -R -r 'select((split("/") | last) == "complete.age")' "$RUN/new-files" >"$RUN/new-marker-files"
 infra_log 'Copying missing backup files. Existing files will not be replaced.'
 # Every pass uses exact paths from the same inventory. A late snapshot cannot add a marker
 # to the marker pass after its payload was excluded from the verified payload set.
 step copy rclone copy "$SOURCE" "$TARGET" --files-from-raw "$RUN/payload-files" --immutable --checksum --transfers 1 --checkers 1 --s3-no-check-bucket --s3-no-head >"$RUN/copy.out"
-step verify-payload rclone check "$SOURCE" "$TARGET" --files-from-raw "$RUN/payload-files" --download --one-way --checkers 1 >"$RUN/verify-payload.out"
+check_listed verify-payload "$RUN/new-payload-files" --download
 inventory staged
 cmp -s "$RUN/before.json" "$RUN/staged.json" || {
     infra_error 'The source changed before completion markers could be copied. Pause its writers and retry; no success record was saved.'; exit 1;
 }
 step copy-markers rclone copy "$SOURCE" "$TARGET" --files-from-raw "$RUN/marker-files" --immutable --checksum --transfers 1 --checkers 1 --s3-no-check-bucket --s3-no-head >"$RUN/copy-markers.out"
-step verify rclone check "$SOURCE" "$TARGET" --files-from-raw "$RUN/files" --download --one-way --checkers 1 >"$RUN/verify.out"
+check_listed verify "$RUN/new-marker-files" --download
+check_listed verify-proven "$RUN/old-files"
+if [[ -f $RUN/verify-proven.err ]] && grep -qi 'could not be checked' "$RUN/verify-proven.err"; then
+    infra_error 'These providers cannot compare hashes for some files, so a listing cannot prove them. Add VERIFY_ALL=1 to the job file to download every file on every run.'; exit 1
+fi
 inventory after
 cmp -s "$RUN/before.json" "$RUN/after.json" || {
     infra_error 'The source changed during the copy. Pause its writers and retry; no success record was saved.'; exit 1;
 }
 COUNT=$(jq length "$RUN/after.json")
+NEW=$(wc -l <"$RUN/new-files")
+jq 'map({Path, Size})' "$RUN/after.json" | infra_atomic "$STATE_DIR/verified.json"
 printf 'infrakit-copy-v1\n%s\n%s\n%s\n%s\n' "$(date +%s)" "$SOURCE_ID/$SOURCE_PREFIX" "$TARGET_ID/$TARGET_PREFIX" "$COUNT" | infra_atomic "$STATE_DIR/last-copy"
-infra_log "Copy verified: $COUNT source files checked. Destination-only files and backup receipts were left unchanged."
+infra_log "Copy verified: $COUNT source files checked ($NEW downloaded and compared byte for byte, $((COUNT - NEW)) compared by size and hash). Destination-only files and backup receipts were left unchanged."

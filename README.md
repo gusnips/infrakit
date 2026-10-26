@@ -17,7 +17,7 @@ Prints configuration text, warnings and the reloads you would need. It installs 
 ## Install the package
 
 ```sh
-npm install --global @gusnips/infra@0.1.4
+npm install --global @gusnips/infra@0.1.5
 ```
 
 The CLI needs Node.js in PATH and has no JavaScript runtime dependencies. Publishing or installing the package does not schedule a job or restart a service. `gusnips-infra install` only prints a plan; its `--apply` is refused before SSH. The PM2 parser command has its own explicit `--apply`, which changes only a reviewed local module source file and never calls PM2.
@@ -108,10 +108,10 @@ AWS needs `S3_REGION`; leave `S3_ENDPOINT` unset for AWS's regional endpoint. Ot
 ### Copy existing backups to another provider
 
 ```sh
-bash /opt/infrakit/0.1.4/jobs/backup-sync.sh /etc/infrakit/sync.conf
+bash /opt/infrakit/0.1.5/jobs/backup-sync.sh /etc/infrakit/sync.conf
 ```
 
-This copies existing files and checks their bytes at the destination. The first run copies the history. Later runs transfer missing files and still check the source files against the destination. It never deletes files, changes the active provider or rewrites backup receipts. Existing destination files with different bytes stop the job rather than being replaced.
+This copies existing files and checks their bytes at the destination. The first run copies the history and downloads every file once for a byte-for-byte check. Later runs download only the files that have not passed that check yet. Files that passed are compared by size and hash from a listing, which needs no download. It never deletes files, changes the active provider or rewrites backup receipts. Existing destination files with different bytes stop the job rather than being replaced.
 
 Use a private `0600` Bash file for the transfer:
 
@@ -123,7 +123,9 @@ TARGET_PREFIX=backups/nightly
 STATE_DIR=/var/lib/infrakit/copy-nightly-to-s3
 ```
 
-The two remote files use the S3 or R2 settings above. Use separate credentials, with read-only source access and target write access limited to the selected prefix. Keep writers paused while copying the selected source. A failed read, empty source, changed inventory or failed byte check stops the run. Read-back checks use network traffic and may incur provider charges.
+The two remote files use the S3 or R2 settings above. Use separate credentials, with read-only source access and target write access limited to the selected prefix. Keep writers paused while copying the selected source. A failed read, empty source, changed inventory or failed byte check stops the run. A download from S3 is billed as outbound traffic, which is why a file that passed is not downloaded again.
+
+`STATE_DIR/verified.json` lists the files that passed. Delete it to prove every file again. If a provider pair cannot compare hashes, the run stops and tells you to add `VERIFY_ALL=1` to the job file, which downloads every file on every run. The state directory keeps its newest 7 `run-*` folders; older ones are removed.
 
 The copy pins exact file paths from its first listing. Completion markers are copied only from that list, after its payloads pass the byte check. A new snapshot appearing later is not picked up halfway through the transfer. The source must still remain paused: this is a copy, not a transactional storage snapshot.
 
