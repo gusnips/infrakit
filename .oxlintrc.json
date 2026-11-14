@@ -1,0 +1,16 @@
+{
+  "extends": ["./node_modules/@gusnips/oxlint/base.json"],
+  "plugins": [],
+  "rules": {
+    "no-unused-vars": ["error", { "vars": "all", "args": "after-used", "caughtErrors": "all" }],
+    "typescript/ban-ts-comment": ["error", { "minimumDescriptionLength": 10 }],
+    "typescript/no-dynamic-delete": "error",
+    "typescript/no-extraneous-class": "error",
+    "typescript/no-invalid-void-type": "error",
+    "typescript/no-non-null-asserted-nullish-coalescing": "error",
+    "typescript/no-non-null-assertion": "error",
+    "typescript/no-useless-constructor": "error",
+    "typescript/prefer-literal-enum-member": "error",
+    "typescript/unified-signatures": "error"
+  }
+}

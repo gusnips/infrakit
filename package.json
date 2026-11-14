@@ -25,7 +25,7 @@
   },
   "scripts": {
     "build": "rm -rf dist && tsc -p tsconfig.build.json && chmod +x dist/cli.js",
-    "lint": "eslint src scripts tests && for file in jobs/*.sh tests/*.sh; do bash -n \"$file\" || exit; done && shellcheck -x --source-path=SCRIPTDIR jobs/*.sh tests/*.sh",
+    "lint": "oxlint src scripts tests && for file in jobs/*.sh tests/*.sh; do bash -n \"$file\" || exit; done && shellcheck -x --source-path=SCRIPTDIR jobs/*.sh tests/*.sh",
     "typecheck": "tsc --noEmit",
     "format:check": "prettier --check .",
     "release:check": "bun run build && bun scripts/check-release.ts",
@@ -36,11 +36,10 @@
     "access": "public"
   },
   "devDependencies": {
-    "@eslint/js": "^9.39.0",
+    "@gusnips/oxlint": "^0.2.0",
     "@types/node": "^24.0.0",
-    "eslint": "^9.39.0",
+    "oxlint": "1.93.0",
     "prettier": "^3.6.0",
-    "typescript": "^7.0.2",
-    "typescript-eslint": "^8.46.0"
+    "typescript": "^7.0.2"
   }
 }
