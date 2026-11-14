@@ -27,7 +27,7 @@
     "build": "rm -rf dist && tsc -p tsconfig.build.json && chmod +x dist/cli.js",
     "lint": "oxlint src scripts tests && for file in jobs/*.sh tests/*.sh; do bash -n \"$file\" || exit; done && shellcheck -x --source-path=SCRIPTDIR jobs/*.sh tests/*.sh",
     "typecheck": "tsc --noEmit",
-    "format:check": "prettier --check .",
+    "format:check": "oxfmt --check",
     "release:check": "bun run build && bun scripts/check-release.ts",
     "check": "bun run lint && bun run typecheck && bun run format:check && bun run release:check",
     "prepublishOnly": "bun run check"
@@ -38,8 +38,8 @@
   "devDependencies": {
     "@gusnips/oxlint": "^0.2.0",
     "@types/node": "^24.0.0",
+    "oxfmt": "0.78.0",
     "oxlint": "1.93.0",
-    "prettier": "^3.6.0",
     "typescript": "^7.0.2"
   }
 }

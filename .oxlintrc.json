@@ -2,7 +2,10 @@
   "extends": ["./node_modules/@gusnips/oxlint/base.json"],
   "plugins": [],
   "rules": {
-    "no-unused-vars": ["error", { "vars": "all", "args": "after-used", "caughtErrors": "all" }],
+    "no-unused-vars": [
+      "error",
+      { "vars": "all", "args": "after-used", "caughtErrors": "all" }
+    ],
     "typescript/ban-ts-comment": ["error", { "minimumDescriptionLength": 10 }],
     "typescript/no-dynamic-delete": "error",
     "typescript/no-extraneous-class": "error",
