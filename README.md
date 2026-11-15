@@ -17,7 +17,7 @@ Prints configuration text, warnings and the reloads you would need. It installs 
 ## Install the package
 
 ```sh
-npm install --global @gusnips/infra@0.1.5
+npm install --global @gusnips/infra@0.1.6
 ```
 
 The CLI needs Node.js in PATH and has no JavaScript runtime dependencies. Publishing or installing the package does not schedule a job or restart a service. `gusnips-infra install` only prints a plan; its `--apply` is refused before SSH. The PM2 parser command has its own explicit `--apply`, which changes only a reviewed local module source file and never calls PM2.
@@ -108,7 +108,7 @@ AWS needs `S3_REGION`; leave `S3_ENDPOINT` unset for AWS's regional endpoint. Ot
 ### Copy existing backups to another provider
 
 ```sh
-bash /opt/infrakit/0.1.5/jobs/backup-sync.sh /etc/infrakit/sync.conf
+bash /opt/infrakit/0.1.6/jobs/backup-sync.sh /etc/infrakit/sync.conf
 ```
 
 This copies existing files and checks their bytes at the destination. The first run copies the history and downloads every file once for a byte-for-byte check. Later runs download only the files that have not passed that check yet. Files that passed are compared by size and hash from a listing, which needs no download. It never deletes files, changes the active provider or rewrites backup receipts. Existing destination files with different bytes stop the job rather than being replaced.
