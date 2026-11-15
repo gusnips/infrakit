@@ -444,7 +444,7 @@ step seal-proof age -r "$BACKUP_AGE_RECIPIENT" -o "$RUN/sealed/complete.age.part
 mv "$RUN/sealed/complete.age.partial" "$RUN/sealed/complete.age"
 infra_log "Collected ${#ARTIFACTS[@]} artifacts including the manifest. Uploading encrypted files."
 # Create only the dedicated prefix so a listing failure is never treated as absence.
-step remote-prefix rclone mkdir "$REMOTE_ROOT" >"$RUN/details/remote-prefix-output"
+step remote-prefix rclone mkdir "$REMOTE_ROOT" "${RCLONE_UP[@]}" >"$RUN/details/remote-prefix-output"
 step collision-list rclone lsf "$REMOTE_ROOT" --dirs-only >"$RUN/existing-snapshots"
 if grep -Fxq "$SNAPSHOT/" "$RUN/existing-snapshots"; then
     infra_error 'The snapshot name already exists offsite. Run again to choose a new name; no object was replaced.'; exit 1

@@ -106,6 +106,9 @@ switch (tool) {
         console.log(env.FAKE_VERSION ?? "rclone v1.75.2");
         break;
       case "mkdir":
+        // A bucket-scoped AWS key cannot create buckets, and rclone tries to unless told not to.
+        if (env.FAKE_S3_ROOT && !args.includes("--s3-no-check-bucket"))
+          fail("AccessDenied: s3:CreateBucket is not allowed for this key.");
         mkdirSync(remote(args[1]), { recursive: true, mode: 0o700 });
         break;
       case "copy": {
