@@ -9,15 +9,15 @@ INFRA_JOBS=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 # shellcheck source=lib.sh
 source "$INFRA_JOBS/lib.sh"
 if [[ ${1:-} == --help ]]; then
-    printf 'Usage: bash backup.sh <private-job-file>\nProfiles: supabase-docker, postgres-docker, hosted-postgres, files, d1.\nA run encrypts and checks every offsite object before recording success or pruning.\nSee README.md for the private configuration fields.\n'
+    printf 'Usage: bash backup.sh <private-job-file>\nProfiles: supabase-docker, postgres-docker, hosted-postgres, files, d1.\nA run checks every offsite object before recording success or pruning.\nEncryption defaults to age. BACKUP_ENCRYPTION=none explicitly uploads unencrypted files.\nSee README.md for the private configuration fields.\n'
     exit 0
 fi
 infra_runtime
-infra_require age rclone flock sha256sum tar gzip cmp sort find timeout comm
+infra_require rclone flock sha256sum tar gzip cmp sort find timeout comm
 [[ $# == 1 ]] || { infra_error 'Pass one private job file. Use --help for the profile names.'; exit 2; }
 JOB_FILE=$1
 # These values must come from the job, never from an unrelated cron environment.
-unset JOB_ID PROFILE ARCHIVE_DIR STATE_DIR R2_ENV S3_ENV REMOTE_PREFIX BACKUP_AGE_RECIPIENT
+unset JOB_ID PROFILE ARCHIVE_DIR STATE_DIR R2_ENV S3_ENV REMOTE_PREFIX BACKUP_AGE_RECIPIENT BACKUP_ENCRYPTION
 unset CONTAINER DB_USER GLOBALS_USER PG_SERVICE PG_SERVICE_FILE PG_PASS_FILE HOSTED_EXPORT_SCOPE
 unset D1_ENV D1_DOWNLOAD_HOSTS REDIS_CONFIG REDIS_PASSWORD_FILE REDIS_PORT REDIS_RDB REDIS_SOCKET REDIS_CONTAINER REDIS_WAIT_SECONDS D1_TIMEOUT_SECONDS
 unset ALERT_CONFIG HEARTBEAT_CONFIG LOCAL_REMOTE_DIR LOCAL_KEEP_DAYS REMOTE_KEEP_DAYS
@@ -30,14 +30,23 @@ fi
 for field in DB_NAMES DUMP_ARGS CONFIG_PATHS CONTAINER_CONFIG_PATHS STORAGE_PATHS D1_DOWNLOAD_HOSTS; do
     [[ $(declare -p "$field") == 'declare -a '* ]] || { infra_error "$field must be an indexed Bash array. Use parentheses in the job file."; exit 1; }
 done
-for field in JOB_ID PROFILE ARCHIVE_DIR STATE_DIR REMOTE_PREFIX BACKUP_AGE_RECIPIENT; do
+for field in JOB_ID PROFILE ARCHIVE_DIR STATE_DIR REMOTE_PREFIX; do
     [[ -n ${!field:-} ]] || { infra_error "$field is missing. Set it in the job file and retry."; exit 1; }
 done
 infra_name "$JOB_ID" || { infra_error 'JOB_ID must use letters, digits, dots, underscores or hyphens, with no .. and at most 63 characters.'; exit 1; }
 infra_prefix "$REMOTE_PREFIX" || {
     infra_error 'REMOTE_PREFIX must be a nonempty path below the bucket, using letters, digits, dots, slashes, underscores or hyphens. Remove dot segments, empty segments and trailing slashes.'; exit 1;
 }
-infra_single_line "$BACKUP_AGE_RECIPIENT" || { infra_error 'BACKUP_AGE_RECIPIENT is invalid. Set one public age recipient.'; exit 1; }
+BACKUP_ENCRYPTION=${BACKUP_ENCRYPTION-age}
+case $BACKUP_ENCRYPTION in
+    age)
+        infra_require age
+        infra_single_line "${BACKUP_AGE_RECIPIENT:-}" || { infra_error 'BACKUP_AGE_RECIPIENT is missing or invalid. Set one public age recipient.'; exit 1; }
+        MARKER=complete.age; FILE_DESCRIPTION='encrypted files'
+        ;;
+    none) MARKER=complete; FILE_DESCRIPTION='unencrypted files' ;;
+    *) infra_error 'BACKUP_ENCRYPTION must be age or none. Set none only when unencrypted uploads are intended.'; exit 1 ;;
+esac
 LOCAL_KEEP_DAYS=${LOCAL_KEEP_DAYS:-7}
 REMOTE_KEEP_DAYS=${REMOTE_KEEP_DAYS:-30}
 for field in LOCAL_KEEP_DAYS REMOTE_KEEP_DAYS; do
@@ -432,17 +441,25 @@ ARTIFACTS=("$RUN/plain/"*)
 } >"$RUN/manifest.txt.partial"
 mv "$RUN/manifest.txt.partial" "$RUN/plain/manifest.txt"
 ARTIFACTS+=("$RUN/plain/manifest.txt")
+UPLOAD_DIR="$RUN/plain"
 for artifact in "${ARTIFACTS[@]}"; do
     filename=${artifact##*/}
     infra_name "$filename" || { infra_error 'An artifact has an unsafe name. Check the collector before retrying.'; exit 1; }
-    step seal age -r "$BACKUP_AGE_RECIPIENT" -o "$RUN/sealed/$filename.age.partial" "$artifact"
-    [[ -s $RUN/sealed/$filename.age.partial ]]
-    mv "$RUN/sealed/$filename.age.partial" "$RUN/sealed/$filename.age"
+    if [[ $BACKUP_ENCRYPTION == age ]]; then
+        step seal age -r "$BACKUP_AGE_RECIPIENT" -o "$RUN/sealed/$filename.age.partial" "$artifact"
+        [[ -s $RUN/sealed/$filename.age.partial ]]
+        mv "$RUN/sealed/$filename.age.partial" "$RUN/sealed/$filename.age"
+    fi
 done
 printf 'infrakit-snapshot-v1\n%s\n%s\n%s\n%s\n' "$JOB_ID" "$SNAPSHOT" "$STARTED" "$REMOTE_ROOT" >"$RUN/proof.txt"
-step seal-proof age -r "$BACKUP_AGE_RECIPIENT" -o "$RUN/sealed/complete.age.partial" "$RUN/proof.txt"
-mv "$RUN/sealed/complete.age.partial" "$RUN/sealed/complete.age"
-infra_log "Collected ${#ARTIFACTS[@]} artifacts including the manifest. Uploading encrypted files."
+if [[ $BACKUP_ENCRYPTION == age ]]; then
+    UPLOAD_DIR="$RUN/sealed"
+    step seal-proof age -r "$BACKUP_AGE_RECIPIENT" -o "$UPLOAD_DIR/$MARKER.partial" "$RUN/proof.txt"
+    mv "$UPLOAD_DIR/$MARKER.partial" "$UPLOAD_DIR/$MARKER"
+else
+    cp "$RUN/proof.txt" "$UPLOAD_DIR/$MARKER"
+fi
+infra_log "Collected ${#ARTIFACTS[@]} artifacts including the manifest. Uploading $FILE_DESCRIPTION."
 # Create only the dedicated prefix so a listing failure is never treated as absence.
 step remote-prefix rclone mkdir "$REMOTE_ROOT" "${RCLONE_UP[@]}" >"$RUN/details/remote-prefix-output"
 step collision-list rclone lsf "$REMOTE_ROOT" --dirs-only >"$RUN/existing-snapshots"
@@ -450,28 +467,28 @@ if grep -Fxq "$SNAPSHOT/" "$RUN/existing-snapshots"; then
     infra_error 'The snapshot name already exists offsite. Run again to choose a new name; no object was replaced.'; exit 1
 fi
 # The completion marker must not reach the remote before the payload is verified.
-step upload rclone copy "$RUN/sealed" "$REMOTE" --exclude /complete.age "${RCLONE_UP[@]}" >"$RUN/details/upload-output"
-step read-back rclone check "$RUN/sealed" "$REMOTE" --exclude /complete.age --download --one-way --transfers 1 --checkers 1 >"$RUN/details/read-back-output"
-for sealed in "$RUN/sealed/"*; do printf '%s\n' "${sealed##*/}"; done | sort >"$RUN/expected-files"
-grep -Fxv complete.age "$RUN/expected-files" >"$RUN/expected-payload-files"
+step upload rclone copy "$UPLOAD_DIR" "$REMOTE" --exclude "/$MARKER" "${RCLONE_UP[@]}" >"$RUN/details/upload-output"
+step read-back rclone check "$UPLOAD_DIR" "$REMOTE" --exclude "/$MARKER" --download --one-way --transfers 1 --checkers 1 >"$RUN/details/read-back-output"
+for artifact in "$UPLOAD_DIR/"*; do printf '%s\n' "${artifact##*/}"; done | sort >"$RUN/expected-files"
+grep -Fxv "$MARKER" "$RUN/expected-files" >"$RUN/expected-payload-files"
 step payload-list rclone lsf "$REMOTE" --recursive --files-only | sort >"$RUN/remote-files"
-cmp -s "$RUN/expected-payload-files" "$RUN/remote-files" || { infra_error 'The offsite file paths do not match the sealed set. Check the bucket and retry; nothing is pruned.'; exit 1; }
-step completion-upload rclone copyto "$RUN/sealed/complete.age" "$REMOTE/complete.age" "${RCLONE_UP[@]}" >"$RUN/details/completion-upload-output"
-step completion-read-back rclone check "$RUN/sealed" "$REMOTE" --download --one-way --transfers 1 --checkers 1 >"$RUN/details/completion-read-back-output"
+cmp -s "$RUN/expected-payload-files" "$RUN/remote-files" || { infra_error 'The offsite file paths do not match the upload set. Check the bucket and retry; nothing is pruned.'; exit 1; }
+step completion-upload rclone copyto "$UPLOAD_DIR/$MARKER" "$REMOTE/$MARKER" "${RCLONE_UP[@]}" >"$RUN/details/completion-upload-output"
+step completion-read-back rclone check "$UPLOAD_DIR" "$REMOTE" --download --one-way --transfers 1 --checkers 1 >"$RUN/details/completion-read-back-output"
 step remote-list rclone lsf "$REMOTE" --recursive --files-only | sort >"$RUN/remote-files"
-cmp -s "$RUN/expected-files" "$RUN/remote-files" || { infra_error 'The offsite file paths do not match the sealed set. Check the bucket and retry; nothing is pruned.'; exit 1; }
-# An encrypted marker and a local receipt bind retention to exactly this job's verified objects.
+cmp -s "$RUN/expected-files" "$RUN/remote-files" || { infra_error 'The offsite file paths do not match the upload set. Check the bucket and retry; nothing is pruned.'; exit 1; }
+# A marker and a local receipt bind retention to exactly this job's verified objects.
 RECEIPT=$(mktemp -d "$STATE_DIR/receipts/.partial-$SNAPSHOT-XXXXXX")
 cp "$RUN/proof.txt" "$RECEIPT/proof"
 cp "$RUN/expected-files" "$RECEIPT/files"
-HASH=$(sha256sum "$RUN/sealed/complete.age"); printf '%s\n' "${HASH%% *}" >"$RECEIPT/complete.sha256"
+HASH=$(sha256sum "$UPLOAD_DIR/$MARKER"); printf '%s\n' "${HASH%% *}" >"$RECEIPT/complete.sha256"
 mv -T "$RECEIPT" "$STATE_DIR/receipts/$SNAPSHOT"
 printf '%s\n' "$(<"$RUN/proof.txt")" | infra_atomic "$RUN/COMPLETE"
 printf '%s\n' "$(<"$RUN/proof.txt")" | infra_atomic "$STATE_DIR/last-success"
 printf '%s\n' "$REMOTE" | infra_atomic "$STATE_DIR/offsite-enabled"
 VERIFIED=1
 COUNT=$(wc -l <"$RUN/expected-files" | tr -d '[:space:]')
-infra_log "Offsite verified: $SNAPSHOT, $COUNT encrypted files."
+infra_log "Offsite verified: $SNAPSHOT, $COUNT $FILE_DESCRIPTION."
 # Do not prune during an outside-monitor outage, even though the backup proof is valid.
 infra_heartbeat success || NOTIFY_FAILURE=1
 (( NOTIFY_FAILURE == 0 )) || { infra_error 'The backup is verified, but its heartbeat failed. Fix HEARTBEAT_CONFIG and retry; retention was skipped.'; exit 1; }
@@ -488,9 +505,16 @@ for receipt in "$STATE_DIR/receipts/"*; do
     [[ ${INFRA_PROOF[1]} == "$JOB_ID" && ${INFRA_PROOF[2]} == "$name" && ${INFRA_PROOF[4]} == "$REMOTE_ROOT" ]] || continue
     [[ $(<"$receipt/complete.sha256") =~ ^[0-9a-f]{64}$ ]] || { infra_error 'An old receipt has an invalid marker hash. Inspect its private files before retrying.'; exit 1; }
     sort -cu "$receipt/files"
-    grep -Fxq complete.age "$receipt/files" || { infra_error 'An old receipt has no encrypted ownership marker. Inspect it before retrying.'; exit 1; }
+    # Infer each snapshot's format from its receipt, not the current job setting.
+    receipt_marker=complete; receipt_suffix=''
+    if grep -Fxq complete.age "$receipt/files"; then receipt_marker=complete.age; receipt_suffix=.age; fi
+    grep -Fxq "$receipt_marker" "$receipt/files" && grep -Fxq "manifest.txt$receipt_suffix" "$receipt/files" &&
+        [[ $(wc -l <"$receipt/files") -ge 3 ]] || { infra_error 'An old receipt is incomplete. Inspect its marker, manifest and payload before retrying.'; exit 1; }
     while IFS= read -r filename; do
-        [[ $filename =~ ^[A-Za-z0-9_.-]+\.age$ && $filename != *..* ]] || { infra_error 'A receipt has an unsafe file name. Inspect it by hand; retention stopped.'; exit 1; }
+        [[ $filename =~ ^[A-Za-z0-9_.-]+$ && $filename != *..* &&
+            ( ( $receipt_marker == complete.age && $filename == *.age ) || ( $receipt_marker == complete && $filename != *.age ) ) ]] || {
+            infra_error 'A receipt has an unsafe or mixed-format file name. Inspect it by hand; retention stopped.'; exit 1;
+        }
     done <"$receipt/files"
     AGE_SECONDS=$(( NOW - INFRA_PROOF[3] ))
     if (( AGE_SECONDS > REMOTE_KEEP_DAYS * 86400 )); then
@@ -500,13 +524,13 @@ for receipt in "$STATE_DIR/receipts/"*; do
             # A subset is safe after an interrupted prune. Unknown objects always stop it.
             comm -23 "$RUN/prune-files" "$receipt/files" >"$RUN/unowned-files"
             [[ ! -s $RUN/unowned-files ]] || { infra_error 'An old snapshot has unexpected offsite files. Inspect it by hand; no file in that snapshot was deleted.'; exit 1; }
-            step prune-proof rclone cat "$REMOTE_ROOT/$name/complete.age" >"$RUN/prune-proof.age"
-            HASH=$(sha256sum "$RUN/prune-proof.age")
+            step prune-proof rclone cat "$REMOTE_ROOT/$name/$receipt_marker" >"$RUN/prune-proof"
+            HASH=$(sha256sum "$RUN/prune-proof")
             [[ ${HASH%% *} == "$(<"$receipt/complete.sha256")" ]] || { infra_error 'An old snapshot has a different ownership marker. Inspect it by hand; it was not pruned.'; exit 1; }
             while IFS= read -r filename; do
-                [[ $filename == complete.age ]] || step prune-object rclone deletefile "$REMOTE_ROOT/$name/$filename" >"$RUN/details/prune-output"
+                [[ $filename == "$receipt_marker" ]] || step prune-object rclone deletefile "$REMOTE_ROOT/$name/$filename" >"$RUN/details/prune-output"
             done <"$RUN/prune-files"
-            step prune-marker rclone deletefile "$REMOTE_ROOT/$name/complete.age" >"$RUN/details/prune-output"
+            step prune-marker rclone deletefile "$REMOTE_ROOT/$name/$receipt_marker" >"$RUN/details/prune-output"
             infra_log "Pruned offsite snapshot $name."
         fi
     fi

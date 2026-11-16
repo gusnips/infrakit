@@ -243,9 +243,9 @@ probe_env() {
     if (( count > 0 )); then emit finding "$id" "$count"; else emit pass "$id"; fi
 }
 probe_backup() {
-    local id=$1 directory=$2 maximum=$3 job=$4 archive=$5 remote=$6 uid=$7 snapshot receipt age marker hash filename count=0 complete=0 manifest=0
+    local id=$1 directory=$2 maximum=$3 job=$4 archive=$5 remote=$6 uid=$7 snapshot receipt age marker hash filename suffix count=0 complete=0 manifest=0
     local -a INFRA_PROOF=() owner=() files=()
-    has "$id" stat cat cmp sort || return
+    has "$id" stat cat cmp sort grep || return
     [[ -n $NOW ]] || { emit unknown "$id"; return; }
     owned_file "$directory/last-success" "$uid" && owned_file "$directory/.infrakit-owner" "$uid" &&
         owned_file "$archive/.infrakit-owner" "$uid" && owned_file "$directory/offsite-enabled" "$uid" || { emit unknown "$id"; return; }
@@ -260,11 +260,14 @@ probe_backup() {
     cmp -s "$directory/last-success" "$receipt/proof" && sort -cu "$receipt/files" 2>/dev/null || { emit finding "$id"; return; }
     hash=$(cat "$receipt/complete.sha256" 2>/dev/null) && [[ $hash =~ ^[0-9a-f]{64}$ ]] || { emit finding "$id"; return; }
     mapfile -t files 2>/dev/null <"$receipt/files" || { emit unknown "$id"; return; }
+    suffix=''
+    if grep -Fxq complete.age "$receipt/files"; then suffix=.age; fi
     for filename in "${files[@]}"; do
-        [[ $filename =~ ^[A-Za-z0-9_.-]+\.age$ && $filename != *..* ]] || { emit finding "$id"; return; }
+        [[ $filename =~ ^[A-Za-z0-9_.-]+$ && $filename != *..* &&
+            ( ( $suffix == .age && $filename == *.age ) || ( -z $suffix && $filename != *.age ) ) ]] || { emit finding "$id"; return; }
         count=$((count + 1))
-        [[ $filename != complete.age ]] || complete=1
-        [[ $filename != manifest.txt.age ]] || manifest=1
+        [[ $filename != "complete$suffix" ]] || complete=1
+        [[ $filename != "manifest.txt$suffix" ]] || manifest=1
     done
     (( count >= 3 && complete && manifest )) || { emit finding "$id"; return; }
     marker=$(cat "$directory/offsite-enabled" 2>/dev/null) || { emit unknown "$id"; return; }

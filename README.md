@@ -1,6 +1,6 @@
 # infrakit
 
-Read server state, print log limits, run encrypted backups and check disks or sync PostgreSQL certificates on Debian or Ubuntu.
+Read server state, print log limits, run verified backups and check disks or sync PostgreSQL certificates on Debian or Ubuntu.
 
 ```sh
 gusnips-infra inspect ops@server.example.net
@@ -17,7 +17,7 @@ Prints configuration text, warnings and the reloads you would need. It installs 
 ## Install the package
 
 ```sh
-npm install --global @gusnips/infra@0.1.6
+npm install --global @gusnips/infra@0.1.7
 ```
 
 The CLI needs Node.js in PATH and has no JavaScript runtime dependencies. Publishing or installing the package does not schedule a job or restart a service. `gusnips-infra install` only prints a plan; its `--apply` is refused before SSH. The PM2 parser command has its own explicit `--apply`, which changes only a reviewed local module source file and never calls PM2.
@@ -28,7 +28,7 @@ Run a packaged backup with one private job file:
 bash "$(npm root -g)/@gusnips/infra/jobs/backup.sh" /etc/infrakit/nightly.conf
 ```
 
-A verified run prints `Offsite verified:` with the snapshot name and number of encrypted files. A failed run exits nonzero, keeps its local files and says which step to fix. For cron, use the resolved absolute job path instead of running npm each time. Keep the `jobs/` files together.
+A verified run prints `Offsite verified:` with the snapshot name, file count and whether the files are encrypted. A failed run exits nonzero, keeps its local files and says which step to fix. For cron, use the resolved absolute job path instead of running npm each time. Keep the `jobs/` files together.
 
 Disk watch sends warning and recovery mail for space and inode limits. Certificate sync checks a Caddy certificate pair, copies it into existing PostgreSQL files, reloads PostgreSQL and verifies the served fingerprint. It never restarts a container. Both need private configuration and separate scheduling; see [the job guide](docs/ops-jobs.md).
 
@@ -36,7 +36,7 @@ There is no automatic installer or restore automation. Inspection reads local ba
 
 ## Before the first run
 
-Jobs need Bash 4 or newer, GNU coreutils, GNU find, GNU tar, gzip, curl, flock, age and rclone 1.75.2 or newer. Hosted PostgreSQL needs `pg_dump` and `pg_restore` clients at least as new as the database server. Docker PostgreSQL profiles need Docker access and use the dump and restore tools inside the named container; no host PostgreSQL client is needed. D1 needs jq and SQLite with `-safe` support. The copy job needs jq too. Host Redis needs redis-cli; container Redis uses redis-cli inside its container. Redis 7 or newer is required.
+Jobs need Bash 4 or newer, GNU coreutils, GNU find, GNU tar, gzip, curl, flock and rclone 1.75.2 or newer. The default backup encryption also needs age; explicit `BACKUP_ENCRYPTION=none` does not. Hosted PostgreSQL needs `pg_dump` and `pg_restore` clients at least as new as the database server. Docker PostgreSQL profiles need Docker access and use the dump and restore tools inside the named container; no host PostgreSQL client is needed. D1 needs jq and SQLite with `-safe` support. The copy job needs jq too. Host Redis needs redis-cli; container Redis uses redis-cli inside its container. Redis 7 or newer is required.
 
 Configuration files are trusted Bash code, not dotenv or JSON. Use assignments and indexed arrays. Every file that is sourced, plus libpq service/password files and Redis password files, must be a regular, single-link `0600` file. Its owner and every ancestor must be root or the job's user, with no group or other write access. Symlinks, relative paths, `.`/`..` segments and world-writable parents are refused before sourcing. This includes `/tmp`. Configuration is not a sandbox: its owner can run code as the job's user.
 
@@ -53,9 +53,11 @@ Required:
 - `ARCHIVE_DIR`: absolute, dedicated local archive directory.
 - `STATE_DIR`: separate absolute, dedicated state directory. Its `job.lock` allows one run at a time. A second run fails rather than reporting success.
 - `REMOTE_PREFIX`: nonempty path below the bucket. Use letters, digits, dots, slashes, underscores or hyphens; start with a letter, digit or underscore. No dot segments, `..`, glob characters, empty segments or trailing slash. A bucket root is never a retention target.
-- `BACKUP_AGE_RECIPIENT`: one public age recipient. No plaintext upload option exists.
+- `BACKUP_AGE_RECIPIENT`: one public age recipient. Required unless `BACKUP_ENCRYPTION=none` is set explicitly.
 
 Optional:
+
+- `BACKUP_ENCRYPTION`: `age` by default. Explicit `none` uploads the original artifacts, manifest and completion marker without age encryption. No age tool or recipient is needed in that mode. Anyone who can read those objects can read their contents; configure private bucket access and server-side encryption separately. Missing or invalid age settings never select raw mode. Existing encrypted snapshots and keys stay unchanged.
 
 - `BACKEND`: `s3` or `r2` (`r2` by default, or `s3` when `S3_ENV` is set). `local` is for isolated checks only and requires `LOCAL_REMOTE_DIR`, an absolute private directory separate from archive and state.
 - `S3_ENV` / `R2_ENV`: required for the `s3` or `r2` backend. Path to the private Bash remote file below.
@@ -103,12 +105,12 @@ R2_BUCKET='your-backup-bucket'
 
 Choose one credential format. An explicit `S3_PROVIDER` uses the complete `S3_*` key and bucket settings; it never fills a missing S3 key from `R2_*`. With no S3 settings, legacy `R2_*` files keep working. `S3_SESSION_TOKEN` is optional for temporary credentials.
 
-AWS needs `S3_REGION`; leave `S3_ENDPOINT` unset for AWS's regional endpoint. Other S3-compatible providers use `S3_PROVIDER='Other'` and `S3_ENDPOINT`. Cloudflare also accepts `S3_PROVIDER='Cloudflare'` with S3 keys and an endpoint. `R2_ENDPOINT` can replace `R2_ACCOUNT_ID` in a legacy file. Endpoints must be bare HTTPS origins, without a path or credentials. Missing remote or age settings fail; they never become a local-only success. Rclone reads credentials from its process environment, not argv or a shared rclone config. Uploads use `--s3-no-head`; verification still downloads every encrypted object. The runner sets no object ACL, so AWS buckets with ACLs disabled work.
+AWS needs `S3_REGION`; leave `S3_ENDPOINT` unset for AWS's regional endpoint. Other S3-compatible providers use `S3_PROVIDER='Other'` and `S3_ENDPOINT`. Cloudflare also accepts `S3_PROVIDER='Cloudflare'` with S3 keys and an endpoint. `R2_ENDPOINT` can replace `R2_ACCOUNT_ID` in a legacy file. Endpoints must be bare HTTPS origins, without a path or credentials. Missing required remote or encryption settings fail; they never become a local-only success. Rclone reads credentials from its process environment, not argv or a shared rclone config. Uploads use `--s3-no-head`; verification still downloads every uploaded object. The runner sets no object ACL, so AWS buckets with ACLs disabled work.
 
 ### Copy existing backups to another provider
 
 ```sh
-bash /opt/infrakit/0.1.6/jobs/backup-sync.sh /etc/infrakit/sync.conf
+bash /opt/infrakit/0.1.7/jobs/backup-sync.sh /etc/infrakit/sync.conf
 ```
 
 This copies existing files and checks their bytes at the destination. The first run copies the history and downloads every file once for a byte-for-byte check. Later runs download only the files that have not passed that check yet. Files that passed are compared by size and hash from a listing, which needs no download. It never deletes files, changes the active provider or rewrites backup receipts. Existing destination files with different bytes stop the job rather than being replaced.
@@ -151,7 +153,7 @@ DUMP_ARGS=('--exclude-table-data=public.large_cache')
 
 `CONTAINER`, `DB_USER` and a nonempty `DB_NAMES` array are required. Each name follows the `JOB_ID` alphabet and length rules. `GLOBALS_USER` defaults to `DB_USER`. It must be allowed to export cluster roles. The container must support local, noninteractive authentication; the runner never supplies a database password in argv.
 
-The runner collects `globals.sql.gz` and one custom-format dump per database (`db-001.dump`, `db-002.dump`, and so on). The encrypted manifest maps each dump to its database name. Dumps must be nonempty and pass the container's own `pg_restore --list`, with the saved archive sent through stdin. Globals must include PostgreSQL's completion footer. One failed database does not prevent another database or the listed files from being collected.
+The runner collects `globals.sql.gz` and one custom-format dump per database (`db-001.dump`, `db-002.dump`, and so on). The manifest maps each dump to its database name. Dumps must be nonempty and pass the container's own `pg_restore --list`, with the saved archive sent through stdin. Globals must include PostgreSQL's completion footer. One failed database does not prevent another database or the listed files from being collected.
 
 `DUMP_ARGS` accepts only `--exclude-table=` and `--exclude-table-data=` arguments. It cannot change the connection, output, format or schema selection. Write any deliberate exclusions into your restore plan.
 
@@ -179,7 +181,7 @@ HOSTED_EXPORT_SCOPE='All schemas available to the backup role. No globals, stora
 
 `PG_SERVICE` is a libpq service name, not a URL. Both files are private. The service file identifies the host, port, database, role and TLS settings; the password file holds the password. For a remote database, configure certificate verification in the service file. Inherited libpq connection variables are cleared so cron cannot override the service.
 
-The default dump includes all accessible non-system schemas in that one database. `DUMP_ARGS` can exclude tables as above. The role must be able to read every selected table. The runner does not dump cluster globals, claim superuser access or discover other databases. Set `HOSTED_EXPORT_SCOPE` to one line stating what that role can export and what is missing. It is recorded in the encrypted manifest. Add service keys, auth configuration and storage through explicit paths or separate jobs.
+The default dump includes all accessible non-system schemas in that one database. `DUMP_ARGS` can exclude tables as above. The role must be able to read every selected table. The runner does not dump cluster globals, claim superuser access or discover other databases. Set `HOSTED_EXPORT_SCOPE` to one line stating what that role can export and what is missing. It is recorded in the manifest. Add service keys, auth configuration and storage through explicit paths or separate jobs.
 
 ### Files
 
@@ -217,7 +219,7 @@ REDIS_RDB=/data/dump.rdb
 
 Use `PROFILE=d1` with `D1_ENV`, a private Bash file containing `CF_ACCOUNT_ID` (32 hex digits), `CF_DATABASE_ID` (UUID) and `CF_API_TOKEN`. The token must have permission to export that database. Set `D1_DOWNLOAD_HOSTS` to an indexed array of the **exact** HTTPS hosts used by the export. Only subdomains of `cloudflare.com` or `r2.cloudflarestorage.com` are accepted; no wildcards. The hostname must match the signed result URL exactly. Do not guess it or broaden the allowlist to unrelated hosts.
 
-`D1_TIMEOUT_SECONDS` sets the polling deadline (1–9999 seconds, default `600`). The runner POSTs `output_format: polling`, then polls the same endpoint with `current_bookmark`. Pending responses omit status; completed responses use `complete`, failures use `error`. Invalid JSON, malformed fields or an unknown status fail the snapshot. A separate curl config downloads the signed URL without the API token or redirects. Empty/invalid SQL fails. SQLite safe mode validates the SQL in a new scratch database under the run directory, never in an existing database. Validation stops on the first SQL error, has a 600-second timeout and checks that SQLite read through the end of the export. The sealed artifact is `database.sql`.
+`D1_TIMEOUT_SECONDS` sets the polling deadline (1–9999 seconds, default `600`). The runner POSTs `output_format: polling`, then polls the same endpoint with `current_bookmark`. Pending responses omit status; completed responses use `complete`, failures use `error`. Invalid JSON, malformed fields or an unknown status fail the snapshot. A separate curl config downloads the signed URL without the API token or redirects. Empty/invalid SQL fails. SQLite safe mode validates the SQL in a new scratch database under the run directory, never in an existing database. Validation stops on the first SQL error, has a 600-second timeout and checks that SQLite read through the end of the export. The export artifact is `database.sql`.
 
 **An export interrupts D1 queries.** Cloudflare says the database is unavailable for queries during export. Schedule it in a window where that interruption is acceptable. The API requires continued polling; if the job is stopped, it stops polling and Cloudflare automatically cancels the export. This runner has no cancel or resume command. A retry starts a new export and may interrupt queries again. The signed download URL expires after one hour. Failed responses and bookmarks stay in the private run files; never paste them into an alert.
 
@@ -227,11 +229,11 @@ Reference: [Cloudflare D1 export API](https://developers.cloudflare.com/api/reso
 
 A snapshot name is UTC `YYYYmmddTHHMMSSZ-` plus six random letters/digits. Local creation is atomic, and a successful remote-prefix listing must show no collision before upload. A failed listing is never treated as an empty remote.
 
-Artifacts start at partial names. Collection continues after a source failure, but an incomplete run gets `INCOMPLETE`, exits nonzero and uploads nothing. Successful local artifacts and private diagnostics stay in the run directory. Local files, including credentials copied for recovery, are plaintext under `0700` directories. Only the `sealed/` directory is uploaded, with each artifact and the manifest encrypted by age.
+Artifacts start at partial names. Collection continues after a source failure, but an incomplete run gets `INCOMPLETE`, exits nonzero and uploads nothing. Successful local artifacts and private diagnostics stay in the run directory. Local files, including credentials copied for recovery, are plaintext under `0700` directories. Default age mode uploads only `sealed/`, with each artifact and the manifest encrypted. Explicit raw mode uploads `plain/` with names such as `database.dump` and `manifest.txt`.
 
-The payload is uploaded without `complete.age`. It must pass `rclone check --download --one-way` and an exact file-path comparison before the encrypted completion marker is uploaded. The full set then passes the same download and path checks. Only then are its receipt, local `COMPLETE`, atomic `last-success` and `offsite-enabled` state recorded. Neither a successful upload alone nor a previous run's marker counts as a new success.
+The payload is uploaded without its completion marker (`complete.age` for age, `complete` for raw mode). It must pass `rclone check --download --one-way` and an exact file-path comparison before the marker is uploaded. The full set then passes the same download and path checks. Only then are its receipt, local `COMPLETE`, atomic `last-success` and `offsite-enabled` state recorded. Neither a successful upload alone nor a previous run's marker counts as a new success.
 
-The proof has exactly five lines. `last-success`, `COMPLETE`, the receipt's `proof` and the plaintext inside encrypted `complete.age` use the same format:
+The proof has exactly five lines. `last-success`, `COMPLETE`, the receipt's `proof` and the completion marker's plaintext use the same format:
 
 ```text
 infrakit-snapshot-v1
@@ -243,15 +245,15 @@ infrakit-snapshot-v1
 
 `REMOTE_ROOT` is `backup:<bucket>/<prefix>` for R2, or `backup:<absolute-local-remote>/<prefix>` for checks. The full snapshot location adds `/<SNAPSHOT>`. The timestamp names the **start of the backup**, not the verification time. The proof is only recorded as success after verification, so freshness is conservative for a long-running dump.
 
-`STATE_DIR/receipts/<SNAPSHOT>/` contains `proof`, the exact encrypted `files` list and `complete.sha256`, the encrypted ownership marker's hash. The directory owner marker binds the job ID, archive directory and remote root. `offsite-enabled` records the full verified snapshot location. Do not edit or delete these files to hide a failed job.
+`STATE_DIR/receipts/<SNAPSHOT>/` contains `proof`, the exact uploaded `files` list and `complete.sha256`, the ownership marker's hash. The directory owner marker binds the job ID, archive directory and remote root. `offsite-enabled` records the full verified snapshot location. Do not edit or delete these files to hide a failed job.
 
 ## Retention and recovery
 
-Retention runs only after a fully collected, sealed and verified new snapshot and its configured success ping. It considers only receipts belonging to this job and remote. Unknown historical backups, incomplete runs and unrecognized names stay untouched. Failed runs can consume disk space; inspect them and remove them by hand only after deciding what you need to keep.
+Retention runs only after a fully collected and verified new snapshot and its configured success ping. It considers only receipts belonging to this job and remote. Unknown historical backups, incomplete runs and unrecognized names stay untouched. Failed runs can consume disk space; inspect them and remove them by hand only after deciding what you need to keep.
 
-Before deleting an old remote snapshot, retention checks that every remaining path belongs to its receipt and that `complete.age` matches its saved hash. It deletes that marker last, so an interrupted prune can safely resume on the next verified run. A failed read or unknown object stops retention. It uses individual file deletes, never a bucket-root purge. Local deletion also requires a matching `COMPLETE` proof. Small receipts stay after pruning; they grow by one per verified run in this release. Do not rely on bucket lifecycle rules that bypass these checks.
+Before deleting an old remote snapshot, retention reads its format from its receipt, not the current encryption setting. The receipt must contain one completion marker, a matching manifest and at least one artifact, with no mixed raw/age filenames. Every remaining remote path must belong to that receipt, and `complete.age` or `complete` must match its saved hash. Retention deletes that marker last, so an interrupted prune can safely resume on the next verified run. A failed read or unknown object stops retention. It uses individual file deletes, never a bucket-root purge. Local deletion also requires a matching `COMPLETE` proof. Small receipts stay after pruning; they grow by one per verified run in this release. Do not rely on bucket lifecycle rules that bypass these checks.
 
-To recover, download a chosen sealed snapshot to a separate restore machine. Decrypt its manifest and artifacts with your offline age identity, compare each plaintext checksum to the manifest, then test the database and files in isolation. Never restore over a live database as a drill. Tar paths are root-relative; extract into a scratch directory first, inspect them and copy back only the paths your recovery plan names. Do not restore PostgreSQL globals blindly over an existing cluster.
+To recover, download a chosen snapshot to a separate restore machine. For an age snapshot, first decrypt its manifest and artifacts with your offline age identity. Raw snapshots need no decryption. Compare each plaintext checksum to the manifest, then test the database and files in isolation. Never restore over a live database as a drill. Tar paths are root-relative; extract into a scratch directory first, inspect them and copy back only the paths your recovery plan names. Do not restore PostgreSQL globals blindly over an existing cluster.
 
 A logical PostgreSQL dump does not replace a physical backup and write-ahead log (WAL) chain. It cannot restore every point between runs. File copies and dumps also do not promise one shared transaction across databases, storage and Redis. A verified download proves byte equality, not that every application key was listed or that a full application restore works.
 
@@ -290,8 +292,11 @@ bash tests/diskwatch.test.sh
 bash tests/cert-sync.test.sh
 bash tests/heartbeat.test.sh
 bash tests/backup-sync.test.sh
+bash tests/backup-encryption.test.sh
 bun run check
 ```
+
+`backup-encryption.test.sh` is a focused local check for default age and explicit raw uploads, five-line proofs, receipt inspection, marker-last publication, interrupted pruning and copy ordering. It uses real local rclone transfers and a throwaway age identity, with no database or cloud account. Failed checks retain private files under the user cache; successful checks remove them.
 
 `contracts.ts` uses command stand-ins and real age encryption. It checks every profile, missing/unsafe config, dump failures, exact remote sets, locks, notification errors and secret redaction. It also checks Docker dump validation without host PostgreSQL clients, required Supabase recovery files, host/container Redis password files and stale paths, malformed D1 polling responses and SQL isolation. It includes a successful backup and a working prune as positive controls. GNU tar omission controls check decrypted host, storage and container archives with inherited exclusions. State checks cover unsafe targets, failed atomic publication and unread ownership directories without changing prior bytes.
 
