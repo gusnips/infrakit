@@ -100,8 +100,8 @@ inventory() {
 }
 case /$SOURCE_PREFIX/ in */pgbackrest/*) infra_error 'Use pgBackRest tooling for physical repository migration.'; exit 1 ;; esac
 inventory before
-step payload-list jq -r '.[] | select((.Path | split("/") | last) != "complete.age") | .Path' "$RUN/before.json" >"$RUN/payload-files"
-step marker-list jq -r '.[] | select((.Path | split("/") | last) == "complete.age") | .Path' "$RUN/before.json" >"$RUN/marker-files"
+step payload-list jq -r '.[] | select((.Path | split("/") | last) | . != "complete.age" and . != "complete") | .Path' "$RUN/before.json" >"$RUN/payload-files"
+step marker-list jq -r '.[] | select((.Path | split("/") | last) | . == "complete.age" or . == "complete") | .Path' "$RUN/before.json" >"$RUN/marker-files"
 # A download from S3 is billed as outbound traffic, so a file is downloaded for the byte check only until
 # it has passed once. STATE_DIR/verified.json lists the files that passed; one counts as proven only while
 # the destination still holds it at the same size. Proven files are compared by size and hash, which needs
@@ -120,8 +120,8 @@ PROVEN_FILTER='($dest[0] | map({key: .Path, value: .Size}) | from_entries) as $p
     | .[] | select((($present[.Path] == .Size) and ($done[.Path] == .Size)) == $want) | .Path'
 step new-list jq -r --argjson want false --slurpfile dest "$RUN/target.json" --slurpfile proven "$RUN/proven.json" "$PROVEN_FILTER" "$RUN/before.json" >"$RUN/new-files"
 step old-list jq -r --argjson want true --slurpfile dest "$RUN/target.json" --slurpfile proven "$RUN/proven.json" "$PROVEN_FILTER" "$RUN/before.json" >"$RUN/old-files"
-step new-payload-list jq -R -r 'select((split("/") | last) != "complete.age")' "$RUN/new-files" >"$RUN/new-payload-files"
-step new-marker-list jq -R -r 'select((split("/") | last) == "complete.age")' "$RUN/new-files" >"$RUN/new-marker-files"
+step new-payload-list jq -R -r 'select((split("/") | last) | . != "complete.age" and . != "complete")' "$RUN/new-files" >"$RUN/new-payload-files"
+step new-marker-list jq -R -r 'select((split("/") | last) | . == "complete.age" or . == "complete")' "$RUN/new-files" >"$RUN/new-marker-files"
 infra_log 'Copying missing backup files. Existing files will not be replaced.'
 # Every pass uses exact paths from the same inventory. A late snapshot cannot add a marker
 # to the marker pass after its payload was excluded from the verified payload set.
